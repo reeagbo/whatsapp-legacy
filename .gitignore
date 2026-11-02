@@ -2,7 +2,6 @@
 **/build/
 local.properties
 .cxx/
-native-deps/
 *.apk
 *.jks
 *.keystore
@@ -13,3 +12,4 @@ core/test_handshake
 core/test_finish
 core/test_register
 core/wa_probe
+native-deps/
