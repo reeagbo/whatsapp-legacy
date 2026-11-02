@@ -1,0 +1,15 @@
+.gradle/
+**/build/
+local.properties
+.cxx/
+native-deps/
+*.apk
+*.jks
+*.keystore
+core/deps/build/
+core/deps/libsignal-protocol-c-2.3.3/
+core/test_ws
+core/test_handshake
+core/test_finish
+core/test_register
+core/wa_probe
