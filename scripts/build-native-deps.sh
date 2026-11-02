@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${ANDROID_NDK_HOME:?Set ANDROID_NDK_HOME}"
+export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
 export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
 mkdir -p native-deps
 if [ ! -d native-deps/signal ]; then
