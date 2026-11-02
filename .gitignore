@@ -13,3 +13,10 @@ core/test_finish
 core/test_register
 core/wa_probe
 native-deps/
+
+*.o
+core/test_identity
+core/test_node
+core/test_pairing
+core/core
+identity.v1

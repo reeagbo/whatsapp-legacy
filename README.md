@@ -1,45 +1,48 @@
 # WhatsApp Legacy — Android + C99
 
-Proyecto experimental propio, sin Node.js, Termux ni navegador.
+Cliente experimental propio para Android 5.0+ (API 21), ARMv7, ARM64 y x86_64.
+Sin Node.js, Termux ni navegador. C99 implementa Noise, Protobuf, nodos binarios,
+claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
+OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
+y de nombre del servidor, sin excepciones de confianza.
 
-## Estado comprobable
+## Versión 0.2: vinculación por código
 
-Se ha recuperado íntegramente el núcleo de `wa_core_phase12.zip` en `core/`.
-La interfaz Android y el puente JNI de este repositorio se han reconstruido porque
-los archivos Android mencionados en la conversación anterior no estaban guardados.
-No se ha recuperado una implementación de `pair-success` ni `pair-device-sign`.
+Introduce tu número internacional sin `+` y pulsa **Solicitar código**. El código
+se muestra solo después de que el servidor acepte la solicitud. En WhatsApp
+principal abre **Dispositivos vinculados → Vincular dispositivo → Vincular con
+número de teléfono** e introduce el código.
 
-**Esta versión no vincula una cuenta WhatsApp.** El núcleo recuperado construye
-ClientPayload y tiene pruebas locales de WebSocket, Noise y ClientFinish. Faltan
-claves Signal persistentes, completar el intercambio con el servidor y el protocolo
-de vinculación por código. La app muestra diagnósticos reales del núcleo mediante
-JNI, utilizando datos sintéticos que nunca envía. No genera códigos falsos.
+La aplicación distingue entre código disponible, identidad autenticada y
+confirmación final. Guarda claves y certificado en su directorio privado, con
+archivos de modo 0600 y escritura atómica. No incluye datos de cuenta en logs,
+artefactos de Actions ni el repositorio. No puede enviar o recibir mensajes.
 
-## Compilación con GitHub Actions
+**Estado de validación:** las pruebas locales incluyen un móvil principal
+simulado que descifra el paquete, las firmas de identidad y rechazo de HMAC
+falsos. Esto no sustituye la prueba final con un WhatsApp principal real.
+`Comprobar sesión guardada` prueba la autenticación con la identidad existente.
+Sin una identidad vinculada, solo verifica el canal de registro sin usar cuenta.
 
-Subir todo el contenido de este directorio, incluida `.github/`, a la raíz del
-repositorio. Cada push ejecuta `Android APK and C99 tests`. Primero ejecuta las
-pruebas del núcleo y después compila una APK debug firmada para instalar.
-Descargar el artefacto `whatsapp-legacy-debug` de la ejecución completada.
+La APK 0.1 fue firmada con una clave debug efímera: puede ser necesario
+desinstalarla una vez antes de instalar 0.2. Desde esta versión, Actions conserva
+la clave de desarrollo en caché para facilitar actualizaciones. Si GitHub pierde
+esa caché, la firma puede cambiar. No desinstales una sesión vinculada sin
+considerar que Android borrará sus claves privadas.
 
-El workflow compila y publica el artefacto de APK en GitHub Actions. Consultar
-el resultado de la ejecución antes de considerar validada la compilación Android.
+## Compilación y pruebas
 
-Android 5.0 o posterior (API 21), ARMv7, ARM64 y x86_64. API 21 es una decisión
-técnica provisional de esta reconstrucción, no un requisito histórico recuperado.
-AGP 8.7.3, Gradle 8.9, Kotlin 2.0.21, JDK 17, NDK 27.2.12479018.
+Cada push ejecuta `.github/workflows/android.yml`: pruebas C99, sonda online sin
+número de teléfono (diagnóstica, no bloqueante), compilación y Android Lint.
+Descarga el artefacto `whatsapp-legacy-debug` de la ejecución correcta.
 
-## Compilación local
+Para pruebas locales: `bash core/build.sh`. Requiere CMake, compilador C99,
+OpenSSL y zlib de desarrollo. Para la sonda online sin cuenta: `core/wa_probe`.
 
-Para C99: `bash core/build.sh` (CMake, compilador C99 y cabeceras OpenSSL).
-Para Android: instalar los SDK/NDK fijados en el workflow, definir
-`ANDROID_NDK_HOME`, ejecutar `bash scripts/build-native-deps.sh` y después
-`gradle :app:assembleDebug`. La instalación local requiere Gradle 8.9.
-OpenSSL 3.0.18 se obtiene desde su repositorio oficial durante la compilación.
-La dependencia Signal viene en el archivo original de la fase 12.
+Android: AGP 8.7.3, Gradle 8.9, Kotlin 2.0.21, JDK 17, NDK 27.2.12479018.
+Instala los SDK/NDK fijados en el workflow, define `ANDROID_NDK_HOME`, ejecuta
+`bash scripts/build-native-deps.sh` y después `gradle :app:assembleDebug`.
 
-## Licencias
-
-El paquete original de libsignal-protocol-c 2.3.3 incluye su licencia GPL-3.0.
-Consultar `core/README.md` y las licencias dentro de cada dependencia. Este proyecto
-no está asociado con WhatsApp o Meta. No se incluyen claves ni cuentas de usuario.
+El núcleo inicial procede de `wa_core_phase12.zip`. La interfaz Android se
+reconstruyó al no estar guardada la mencionada en la conversación anterior.
+Ver `THIRD_PARTY.md` y `LICENSE` para las dependencias y referencias del protocolo.

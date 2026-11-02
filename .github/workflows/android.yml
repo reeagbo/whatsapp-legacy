@@ -11,9 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install native test dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libssl-dev
-      - name: Test recovered C99 core
+        run: sudo apt-get update && sudo apt-get install -y cmake libssl-dev zlib1g-dev
+      - name: Test C99 core and pairing protocol
         run: bash core/build.sh
+      - name: Probe live authenticated channel without a phone or account
+        continue-on-error: true
+        run: timeout 60 core/wa_probe
   apk:
     needs: core-tests
     runs-on: ubuntu-24.04
@@ -33,6 +36,20 @@ jobs:
           gradle-version: '8.9'
       - name: Install Android SDK and NDK
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+      - name: Cache native dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            native-deps/armeabi-v7a
+            native-deps/arm64-v8a
+            native-deps/x86_64
+            native-deps/signal
+          key: native-ndk27-openssl3-${{ hashFiles('scripts/build-native-deps.sh', 'core/deps/*.gz') }}
+      - name: Preserve development APK signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: whatsapp-legacy-development-signing-v1
       - name: Build OpenSSL and prepare Signal sources
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018

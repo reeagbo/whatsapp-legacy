@@ -43,7 +43,8 @@ int wa_noise_dh(const uint8_t priv[32],const uint8_t pub[32],uint8_t out[32]){
  EVP_PKEY_CTX_free(ctx);EVP_PKEY_free(a);EVP_PKEY_free(b);return ok;
 }
 int wa_noise_init(wa_noise *n){
- memset(n,0,sizeof *n);SHA256((const unsigned char*)mode,sizeof mode-1,n->hash);
+ memset(n,0,sizeof *n);
+ if(sizeof mode-1==32)memcpy(n->hash,mode,32);else SHA256((const unsigned char*)mode,sizeof mode-1,n->hash);
  memcpy(n->salt,n->hash,32);memcpy(n->key,n->hash,32);
  CHECK(RAND_bytes(n->ephemeral_private,32)==1);
  EVP_PKEY *p=EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519,NULL,n->ephemeral_private,32);if(!p)return 0;
