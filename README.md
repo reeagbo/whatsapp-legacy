@@ -61,7 +61,8 @@ considerar que Android borrará sus claves privadas.
 
 ## Compilación y pruebas
 
-Cada push ejecuta `.github/workflows/android.yml`: pruebas C99, sonda online sin
+Solo por petición expresa del usuario se inicia manualmente
+`.github/workflows/android.yml` mediante `workflow_dispatch`: pruebas C99, sonda online sin
 número de teléfono (diagnóstica, no bloqueante), compilación y Android Lint.
 Descarga el artefacto con versión `whatsapp-legacy-0.7-debug` de la ejecución correcta.
 
@@ -128,3 +129,11 @@ cuyo contenido todavía no está soportado se registran como `ignored-payload`,
 sin una alerta falsa de descifrado. Esto no implementa sincronización de historial
 ni permite recuperar automáticamente los paquetes ya confirmados por 0.6.
 Las pruebas incluyen 30/60 KiB y texto posterior en la misma sesión Signal.
+
+
+## Cambios pendientes de la próxima compilación
+
+Modo oscuro por defecto en la lista, chat, burbujas, compositor, formularios,
+diálogos y barras del sistema. Paleta centralizada en `res/values/colors.xml` y
+tema nativo compatible con Android 5.0. No se ha incrementado la versión ni
+compilado este cambio. Las compilaciones quedan exclusivamente bajo petición.

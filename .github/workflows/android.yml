@@ -1,7 +1,6 @@
 name: Android APK and C99 tests
+# Builds are manual: the user explicitly requests each new APK/version.
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: read

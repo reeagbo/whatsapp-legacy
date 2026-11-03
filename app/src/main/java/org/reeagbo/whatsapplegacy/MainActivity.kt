@@ -94,9 +94,15 @@ class MainActivity : Activity() {
     private var pendingMessage: String? = null
     private var reconnects = 0
     private var sessionGeneration = 0
-    private val green = Color.rgb(18, 101, 82)
-    private val ink = Color.rgb(30, 45, 42)
-    private val muted = Color.rgb(96, 112, 107)
+    @Suppress("DEPRECATION")
+    private fun palette(id: Int) = resources.getColor(id)
+    private val green by lazy { palette(R.color.wa_accent) }
+    private val ink by lazy { palette(R.color.wa_text) }
+    private val muted by lazy { palette(R.color.wa_muted) }
+    private val canvas by lazy { palette(R.color.wa_background) }
+    private val surface by lazy { palette(R.color.wa_surface) }
+    private val inputSurface by lazy { palette(R.color.wa_input) }
+    private val outgoingSurface by lazy { palette(R.color.wa_outgoing) }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun shape(color: Int, radius: Int = 14) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
     private fun label(value: String, size: Float = 16f, color: Int = ink) = TextView(this).apply { text = value; textSize = size; setTextColor(color) }
@@ -109,17 +115,17 @@ class MainActivity : Activity() {
         setOnClickListener { click() }
     }
     private fun header(name: String, chat: Boolean) {
-        val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(10),dp(9),dp(10),dp(6)); setBackgroundColor(Color.WHITE) }
+        val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(10),dp(9),dp(10),dp(6)); setBackgroundColor(surface) }
         if (chat) bar.addView(action("‹", "Volver a conversaciones") { showList() }, LinearLayout.LayoutParams(dp(48),dp(48)))
         bar.addView(label(name, if(chat) 21f else 26f).apply { setTypeface(null,Typeface.BOLD); maxLines=1; gravity=Gravity.CENTER_VERTICAL }, LinearLayout.LayoutParams(0,dp(52),1f).apply { gravity=Gravity.CENTER_VERTICAL })
         if (!chat) bar.addView(action("+", "Nueva conversación") { newConversation() },LinearLayout.LayoutParams(dp(52),dp(52)))
         bar.addView(action("⋮", "Conexión y diagnóstico") { showSettings() },LinearLayout.LayoutParams(dp(48),dp(52)))
         page.addView(bar)
-        statusLabel=label(statusText,13f,muted).apply { setPadding(dp(20),dp(4),dp(16),dp(12)); setBackgroundColor(Color.WHITE) }
+        statusLabel=label(statusText,13f,muted).apply { setPadding(dp(20),dp(4),dp(16),dp(12)); setBackgroundColor(surface) }
         page.addView(statusLabel)
     }
     private fun newPage() {
-        page=column().apply { setBackgroundColor(Color.rgb(245,247,245)) }
+        page=column().apply { setBackgroundColor(canvas) }
         setContentView(page)
     }
     private fun showList() {
@@ -134,8 +140,8 @@ class MainActivity : Activity() {
         })
         for(chat in chats) {
             val name=chat.name.ifBlank { display(chat.jid) }
-            val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); setBackgroundColor(Color.WHITE); minimumHeight=dp(86); isClickable=true; contentDescription="Abrir conversación con $name" }
-            row.addView(label(name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(Color.rgb(223,238,230),28) },LinearLayout.LayoutParams(dp(52),dp(52)))
+            val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); setBackgroundColor(surface); minimumHeight=dp(86); isClickable=true; contentDescription="Abrir conversación con $name" }
+            row.addView(label(name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),28) },LinearLayout.LayoutParams(dp(52),dp(52)))
             row.addView(column().apply {
                 setPadding(dp(14),0,dp(8),0)
                 addView(label(name,18f).apply { setTypeface(null,Typeface.BOLD); setSingleLine(true) })
@@ -143,7 +149,7 @@ class MainActivity : Activity() {
             },LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1f))
             row.addView(label(SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(chat.time)),12f,muted))
             row.setOnClickListener { showChat(chat.jid) }; rows.addView(row)
-            rows.addView(View(this).apply { setBackgroundColor(Color.rgb(235,240,236)) },LinearLayout.LayoutParams(-1,dp(1)))
+            rows.addView(View(this).apply { setBackgroundColor(palette(R.color.wa_divider)) },LinearLayout.LayoutParams(-1,dp(1)))
         }
         page.addView(ScrollView(this).apply { addView(rows) },LinearLayout.LayoutParams(-1,0,1f))
     }
@@ -164,10 +170,10 @@ class MainActivity : Activity() {
         messageList=column().apply { setPadding(dp(12),dp(16),dp(12),dp(16)) }
         messageScroll=ScrollView(this).apply { isFillViewport=true;addView(messageList) }
         page.addView(messageScroll,LinearLayout.LayoutParams(-1,0,1f))
-        val bar=LinearLayout(this).apply { gravity=Gravity.BOTTOM;setPadding(dp(10),dp(8),dp(10),dp(10));setBackgroundColor(Color.WHITE) }
-        compose=EditText(this).apply { hint="Escribe un mensaje"; minLines=1;maxLines=5;textSize=17f;setTextColor(ink);background=shape(Color.rgb(239,243,240),24);setPadding(dp(16),dp(12),dp(16),dp(12));isSaveEnabled=false;inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES }
+        val bar=LinearLayout(this).apply { gravity=Gravity.BOTTOM;setPadding(dp(10),dp(8),dp(10),dp(10));setBackgroundColor(surface) }
+        compose=EditText(this).apply { hint="Escribe un mensaje"; minLines=1;maxLines=5;textSize=17f;setTextColor(ink);setHintTextColor(muted);background=shape(inputSurface,24);setPadding(dp(16),dp(12),dp(16),dp(12));isSaveEnabled=false;inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES }
         bar.addView(compose,LinearLayout.LayoutParams(0,-2,1f))
-        sendButton=action("↑","Enviar mensaje") { sendText() }.apply { setTextColor(Color.WHITE);background=shape(green,28) }
+        sendButton=action("↑","Enviar mensaje") { sendText() }.apply { setTextColor(canvas);background=shape(green,28) }
         bar.addView(sendButton,LinearLayout.LayoutParams(dp(54),dp(54)).apply { leftMargin=dp(8) });page.addView(bar)
         refreshMessages();updateSend()
     }
@@ -175,7 +181,7 @@ class MainActivity : Activity() {
         val jid=conversation?:return;val list=messageList?:return;list.removeAllViews()
         for(message in store.messages(jid)) {
             val line=LinearLayout(this).apply { gravity=if(message.outgoing)Gravity.END else Gravity.START;setPadding(0,dp(4),0,dp(4)) }
-            val bubble=column().apply { background=shape(if(message.outgoing)Color.rgb(218,239,221) else Color.WHITE);setPadding(dp(13),dp(10),dp(13),dp(8));minimumWidth=dp(104) }
+            val bubble=column().apply { background=shape(if(message.outgoing)outgoingSurface else surface);setPadding(dp(13),dp(10),dp(13),dp(8));minimumWidth=dp(104) }
             bubble.addView(label(message.text,17f).apply { maxWidth=(resources.displayMetrics.widthPixels*0.73).toInt();setTextIsSelectable(true) })
             val state=if(!message.outgoing) "" else when(message.status) { 0->"Pendiente";1->"Enviado · sin confirmar";2->"Aceptado";3->"Entregado";4->"Leído";-2->"Sin confirmación";else->"No enviado" }
             bubble.addView(label(SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(message.time))+if(state.isBlank()) "" else " · $state",11f,muted).apply { gravity=Gravity.END;setPadding(0,dp(6),0,0) })
@@ -215,8 +221,9 @@ class MainActivity : Activity() {
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        window.statusBarColor=Color.WHITE
-        window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        window.statusBarColor=surface
+        window.navigationBarColor=canvas
+        window.decorView.systemUiVisibility=0 // Light system icons on dark surfaces.
         debugLog=DebugLog(File(filesDir,"diagnostics/latest.txt"))
         debugLog.add("APP_OPEN version=$appVersion sdk=${Build.VERSION.SDK_INT} abis=${Build.SUPPORTED_ABIS.joinToString(",")}")
         oldCrashHandler=Thread.getDefaultUncaughtExceptionHandler()

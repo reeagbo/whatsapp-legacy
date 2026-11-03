@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Native dark theme, including dialogs and controls, compatible with API 21. -->
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:colorAccent">@color/wa_accent</item>
+        <item name="android:colorBackground">@color/wa_background</item>
+        <item name="android:windowBackground">@color/wa_background</item>
+        <item name="android:colorPrimary">@color/wa_surface</item>
+        <item name="android:colorPrimaryDark">@color/wa_background</item>
+        <item name="android:statusBarColor">@color/wa_surface</item>
+        <item name="android:navigationBarColor">@color/wa_background</item>
+        <item name="android:textColorPrimary">@color/wa_text</item>
+        <item name="android:textColorSecondary">@color/wa_muted</item>
+        <item name="android:textColorHint">@color/wa_muted</item>
+        <item name="android:colorButtonNormal">@color/wa_input</item>
+        <item name="android:colorControlNormal">@color/wa_muted</item>
+        <item name="android:colorControlActivated">@color/wa_accent</item>
+    </style>
+</resources>
