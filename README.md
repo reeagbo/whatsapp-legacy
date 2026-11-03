@@ -6,6 +6,29 @@ claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
 OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
 y de nombre del servidor, sin excepciones de confianza.
 
+## Cambios después de 0.10 (sin nueva compilación)
+
+Los chats cuyo número se desconoce muestran **Pendiente**, sin dígitos del LID.
+Los diagnósticos parciales solicitados siguen disponibles en el log.
+
+Después de los reintentos rápidos de 2/4/8 segundos, la conexión continúa con
+pausas de 1 minuto, 2 minutos y después 5 minutos entre intentos. El contador
+se satura y no crece indefinidamente. Así se recupera también de fallos de DNS
+que no generan un nuevo aviso de conectividad Android. Una conexión estable de
+30 segundos restablece la secuencia rápida. Volver la red sigue adelantando el
+intento; desconectar manualmente, fallar el almacenamiento o destruir la actividad
+cancela la recuperación. La interfaz informa de la próxima pausa. Los errores
+al poner paquetes en WebSocket también activan la recuperación de transporte;
+no se reenvía automáticamente texto de resultado incierto.
+
+Estas esperas dependen de que Android mantenga vivo el proceso y permita
+su ejecución. No se añade un servicio permanente ni se impide el reposo.
+Pruebas JVM ampliadas y pendientes de ejecutar con la siguiente versión solicitada.
+
+Siguiente objetivo acordado para estudiar: recuperar conversaciones e historial.
+Primero validar recuperación de conexión en móvil. No se ha implementado todavía
+sincronización de historial ni se ha iniciado una nueva compilación.
+
 ## Versión 0.10-debug: agenda automática y diagnóstico
 
 Por petición del usuario, el log incluye dominio (`lid`/`pn`) y los últimos seis

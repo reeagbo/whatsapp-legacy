@@ -142,7 +142,7 @@ class MainActivity : Activity() {
     private fun shape(color: Int, radius: Int = 14) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
     private fun label(value: String, size: Float = 16f, color: Int = ink) = TextView(this).apply { text = value; textSize = size; setTextColor(color) }
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-    private fun display(jid: String) = if (jid.endsWith("@lid")) "…" + jid.substringBefore('@').takeLast(6) else "+" + jid.substringBefore('@').substringBefore(':')
+    private fun display(jid: String) = if (jid.endsWith("@lid")) "Pendiente" else "+" + jid.substringBefore('@').substringBefore(':')
     private fun contactName(chat: ChatStore.Chat) = chat.name.takeIf { it.isNotBlank() }
         ?: phoneNames[chat.jid] ?: chat.pushName.takeIf { it.isNotBlank() } ?: display(chat.jid)
     private fun traceIdentity(chat: ChatStore.Chat) {
@@ -548,7 +548,7 @@ class MainActivity : Activity() {
             while (true) {
                 val data = nativeOutput(handle) ?: break
                 log("WEBSOCKET_TX binary_bytes=${data.size}")
-                if (!webSocket.send(data.toByteString())) { finish("No se pudo enviar el paquete cifrado."); break }
+                if (!webSocket.send(data.toByteString())) { finish("No se pudo enviar el paquete cifrado.",retryNetwork=authenticated||phone.isEmpty()); break }
             }
         }
 
@@ -619,7 +619,9 @@ class MainActivity : Activity() {
                         val delay=if(retryNetwork)reconnectPolicy.nextDelay(SystemClock.elapsedRealtime()) else null
                         if(delay!=null && automaticReconnect) {
                             val generation=sessionGeneration
-                            log("RECONNECT_SCHEDULED delay_ms=$delay")
+                            log("RECONNECT_SCHEDULED delay_ms=$delay mode=${if(delay>=60_000L) "maintenance" else "quick"}")
+                            val wait=if(delay>=60_000L) "${delay/60_000L} min" else "${delay/1_000L} s"
+                            render("$status Reintento en $wait.","",false)
                             handler.postDelayed({ if(automaticReconnect&&connection==null&&!destroyed&&generation==sessionGeneration)start("") },delay)
                         }
                     }
