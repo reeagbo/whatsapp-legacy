@@ -36,14 +36,20 @@ se prepara localmente y se muestra al enviar la solicitud, sin esperar un IQ res
 principal abre **Dispositivos vinculados → Vincular dispositivo → Vincular con
 número de teléfono** e introduce el código.
 
-La aplicación distingue entre código disponible, identidad autenticada y
-confirmación final. Guarda claves y certificado en su directorio privado, con
+Tras verificar la identidad, el servidor solicita un reinicio (515). La app
+reconecta automáticamente con las claves guardadas; solo una respuesta de login
+`success` confirma la autenticación de la sesión. El reinicio no es por sí solo
+una confirmación final. Un nuevo código permite repetir una vinculación rechazada
+conservando las claves de largo plazo. Guarda claves y certificado en su directorio privado, con
 archivos de modo 0600 y escritura atómica. No incluye datos de cuenta en logs,
 artefactos de Actions ni el repositorio. No puede enviar o recibir mensajes.
 
 **Estado de validación:** las pruebas locales incluyen un móvil principal
 simulado que descifra el paquete, las firmas de identidad y rechazo de HMAC
-falsos. Esto no sustituye la prueba final con un WhatsApp principal real.
+falsos. La prueba real con 0.4 verificó HMAC y firma de la cuenta y recibió el reinicio
+515, pero después el móvil principal notificó un fallo y el login manual recibió
+401. En 0.5 se elimina la espera manual antes de reconectar; queda pendiente
+validar el resultado con el móvil principal.
 `Comprobar sesión guardada` prueba la autenticación con la identidad existente.
 Sin una identidad vinculada, solo verifica el canal de registro sin usar cuenta.
 
@@ -57,7 +63,7 @@ considerar que Android borrará sus claves privadas.
 
 Cada push ejecuta `.github/workflows/android.yml`: pruebas C99, sonda online sin
 número de teléfono (diagnóstica, no bloqueante), compilación y Android Lint.
-Descarga el artefacto `whatsapp-legacy-debug` de la ejecución correcta.
+Descarga el artefacto con versión `whatsapp-legacy-0.5-debug` de la ejecución correcta.
 
 Para pruebas locales: `bash core/build.sh`. Requiere CMake, compilador C99,
 OpenSSL y zlib de desarrollo. Para la sonda online sin cuenta: `core/wa_probe`.

@@ -200,6 +200,14 @@ wa_pair_session *wa_pair_create(const char *path, const char *phone) {
 
     return s;
   }
+  /* Explicit code requests retry a rejected pairing, preserving long-term
+   * keys. Do not overwrite the existing disk identity on mere creation. */
+  if (*phone && s->identity.jid[0]) {
+    OPENSSL_cleanse(s->identity.jid, sizeof s->identity.jid);
+    OPENSSL_cleanse(s->identity.account, sizeof s->identity.account);
+    s->identity.account_len = 0;
+    trace(s,"NEW_PAIRING_REQUEST previous_account_cleared_in_memory=yes keys_preserved=yes");
+  }
   trace(s,"IDENTITY_READY stored_account=%s; NOISE_INITIALIZED",s->identity.jid[0]?"yes":"no");
   snprintf(s->status, sizeof s->status,
            "Claves Signal comprobadas y guardadas. Conectando por TLS...");
@@ -638,10 +646,10 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
 
     if (code && !strcmp(code, "515") && s->proof) {
       s->state = 4;
-      trace(s,"PAIRING_CONFIRMED server_restart=515");
+      trace(s,"PAIRING_RESTART_REQUIRED server_restart=515");
       snprintf(s->status, sizeof s->status,
-               "Vinculacion autenticada. Claves y certificado guardados. "
-               "Puedes comprobar la sesion al volver a conectar.");
+               "Identidad verificada y guardada. Es necesario reconectar "
+               "para completar la vinculacion; aun no se confirma la sesion.");
 
       return 1;
     }

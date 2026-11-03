@@ -4,7 +4,7 @@
 #include <stdint.h>
 typedef struct wa_pair_session wa_pair_session;
 /* State: -1 error, 1 handshake, 2 awaiting primary identity verification, 3 locally generated code ready,
- * 4 pairing authenticated/restart requested, 5 existing session authenticated,
+ * 4 identity verified/restart required (login still pending), 5 existing session authenticated,
  * 6 anonymous channel ready (test probe). */
 wa_pair_session *wa_pair_create(const char *credentials_path,
                                 const char *phone);

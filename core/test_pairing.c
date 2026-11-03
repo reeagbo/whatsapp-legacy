@@ -157,19 +157,42 @@ int main(void) {
   assert(deliver(s, &server, t) && s->proof && s->state == 2);
   wa_tree_free(t);
   t = drain(s, &server);
-  assert(wa_node_child(t->root, "pair-device-sign"));
+  wa_node *signed_node = wa_node_child(wa_node_child(t->root, "pair-device-sign"), "device-identity");
+  wa_slice signed_details, device_signature;
+  assert(signed_node && wa_pb_bytes_field(signed_node->data, signed_node->data_len, 1, &signed_details));
+  assert(wa_pb_bytes_field(signed_node->data, signed_node->data_len, 4, &device_signature) && device_signature.len == 64);
+  assert(!strcmp(wa_node_get(signed_node, "key-index"), "1"));
+  message[1] = 1;
+  memcpy(message + 2, signed_details.ptr, signed_details.len);
+  memcpy(message + 2 + signed_details.len, s->identity.identity_public, 32);
+  memcpy(message + 34 + signed_details.len, apk, 32);
+  assert(wa_verify(s->identity.identity_public, message, signed_details.len + 66, device_signature.ptr));
   wa_tree_free(t);
   wa_identity stored;
   assert(wa_identity_open(path, &stored) &&
          !strcmp(stored.jid, "34123456789:1@s.whatsapp.net") &&
          stored.account_len > 0);
+  /* A restart preserves credentials; retrying a rejected pairing preserves
+   * long-term keys and does not destroy disk credentials on cancel. */
+  wa_pair_session *login = wa_pair_create(path, "");
+  assert(login && !strcmp(login->identity.jid, stored.jid));
+  uint8_t login_pb[4096]; size_t login_len = 0; uint64_t user = 0, device_id = 0;
+  assert(login_payload(login, login_pb, sizeof login_pb, &login_len));
+  assert(pb_number(login_pb, login_len, 1, &user) && user == UINT64_C(34123456789));
+  assert(pb_number(login_pb, login_len, 18, &device_id) && device_id == 1);
+  wa_pair_free(login);
+  wa_pair_session *retry = wa_pair_create(path, "34123456789");
+  assert(retry && !*retry->identity.jid && !retry->identity.account_len);
+  assert(!memcmp(retry->identity.noise_private, stored.noise_private, 32));
+  assert(wa_identity_open(path, &stored) && *stored.jid);
+  wa_pair_free(retry);
   t = wa_tree_create();
   root = wa_node_add(t, NULL, "stream:error");
   assert(wa_node_attr(root, "code", "515"));
   assert(deliver(s, &server, t) && s->state == 4 && !*wa_pair_code(s));
   wa_tree_free(t);
   const char *log = wa_pair_debug_log(s);
-  assert(strstr(log,"PAIR_CODE_PREPARED") && strstr(log,"PAIRING_CONFIRMED"));
+  assert(strstr(log,"PAIR_CODE_PREPARED") && strstr(log,"PAIRING_RESTART_REQUIRED"));
   assert(!strstr(log,"34123456789") && !strstr(log,s->code) && !strstr(log,path));
   wa_pair_debug_clear(s);
   assert(!*wa_pair_debug_log(s));
@@ -187,6 +210,6 @@ int main(void) {
   rmdir(dir);
   puts("PASS: fragmented encrypted pairing flow, code visibility without IQ acknowledgement, "
        "primary-side bundle decryption, rejected forged account HMAC, signed "
-       "identity persistence and restart confirmation");
+       "identity persistence, restart requirement and rejected-account retry");
   return 0;
 }

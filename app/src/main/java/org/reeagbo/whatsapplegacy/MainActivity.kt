@@ -235,7 +235,12 @@ class MainActivity : Activity() {
             }
             drainNative()
             if (state != lastState) { log("STATE_CHANGE $lastState->$state"); lastState = state }
-            if (state < 0 || state >= 4) { finish(status); return }
+            if (state == 4) {
+                log("PAIRING_RESTART_REQUIRED reconnect=automatic")
+                finish("Identidad verificada. Reconectando para completar la vinculación…", reconnect = true)
+                return
+            }
+            if (state < 0 || state >= 5) { finish(status); return }
             handler.post { if (connection === this && !finished) render(status, pairingCode, true) }
         }
 
@@ -246,12 +251,13 @@ class MainActivity : Activity() {
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = synchronized(lock) {
+            if (finished) { log("WEBSOCKET_CLOSED_AFTER_ATTEMPT"); return@synchronized }
             log("WEBSOCKET_FAILURE http=${response?.code ?: "none"}")
             debugLog.failure("A$attempt NETWORK", t)
             if (!finished) finish("Error de conexión: ${t.javaClass.simpleName}. Comprueba Internet y la fecha del móvil.")
         }
 
-        private fun finish(status: String) {
+        private fun finish(status: String, reconnect: Boolean = false) {
             if (finished) return
             drainNative()
             log("ATTEMPT_END state=${if (handle != 0L) nativeState(handle) else -1}")
@@ -260,7 +266,17 @@ class MainActivity : Activity() {
             deadline?.cancel(false)
             ws?.close(1000, "Finished")
             if (handle != 0L) { nativeFree(handle); handle = 0L }
-            handler.post { if (connection === this) { connection = null; render(status, "", false) } }
+            handler.post {
+                if (connection === this && !destroyed) {
+                    if (reconnect) {
+                        log("AUTOMATIC_SESSION_RECONNECT")
+                        start("")
+                    } else {
+                        connection = null
+                        render(status, "", false)
+                    }
+                }
+            }
         }
 
         fun cancel() = synchronized(lock) {
