@@ -6,7 +6,7 @@ claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
 OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
 y de nombre del servidor, sin excepciones de confianza.
 
-## Corrección pendiente después de 0.11
+## Versión 0.12-debug: rutas de historial y diagnóstico
 
 El log real confirma rechazo de la petición completa y una notificación de
 historial tras la petición por chat. La importación falló con IOException y el
@@ -18,8 +18,8 @@ comenzar por `/mms/` (ruta de subida). Ahora se aceptan rutas CDN relativas como
 caracteres de control y redirecciones. El fallo del log es compatible con esa
 restricción, pero su etapa no estaba registrada y falta verificarlo en móvil.
 El diagnóstico nuevo indica path/download/decode/sqlite/acknowledge, estado HTTP
-y tamaño descargado, sin URL ni claves. Pruebas de rutas añadidas, pendientes
-de compilar con la siguiente petición de versión. Se conserva 0.11 y Actions manual.
+y tamaño descargado, sin URL ni claves. Las pruebas de rutas se ejecutan en la compilación 0.12 solicitada por el usuario.
+Actions permanece manual.
 
 ## Versión 0.11-debug: reconexión e historial experimental
 
@@ -213,7 +213,7 @@ considerar que Android borrará sus claves privadas.
 Solo por petición expresa del usuario se inicia manualmente
 `.github/workflows/android.yml` mediante `workflow_dispatch`: pruebas C99, sonda online sin
 número de teléfono (diagnóstica, no bloqueante), compilación y Android Lint.
-Descarga el artefacto con versión `whatsapp-legacy-0.11-debug` de la ejecución correcta.
+Descarga el artefacto con versión `whatsapp-legacy-0.12-debug` de la ejecución correcta.
 
 Para pruebas locales: `bash core/build.sh`. Requiere CMake, compilador C99,
 OpenSSL y zlib de desarrollo. Para la sonda online sin cuenta: `core/wa_probe`.
