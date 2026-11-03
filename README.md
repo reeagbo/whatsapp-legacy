@@ -6,7 +6,20 @@ claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
 OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
 y de nombre del servidor, sin excepciones de confianza.
 
-## Versión 0.2: vinculación por código
+## Versión 0.3-debug: registro de diagnóstico
+
+Incluye **Guardar log**, **Ver log** y **Copiar log**. Después de reproducir el fallo,
+guarda el TXT y adjúntalo al chat. El log conserva marcas de tiempo UTC, versión,
+ABI/API, DNS, conexión TCP/TLS, apertura del WebSocket, fases de Noise y metadatos
+de las respuestas binarias. Persiste entre aperturas y se limita a 256 KiB.
+No registra teléfonos, códigos, JID, claves, certificados, cabeceras ni paquetes.
+Los eventos nativos usan listas de nombres permitidos y hay pruebas de redacción,
+recorte, reapertura y exportación en memoria si falla el almacenamiento.
+
+El APK incorpora la versión en su nombre. Comparte la firma de desarrollo de 0.2
+si la caché de Actions sigue disponible, para actualizar conservando la sesión.
+
+## Vinculación por código
 
 Introduce tu número internacional sin `+` y pulsa **Solicitar código**. El código
 se muestra solo después de que el servidor acepte la solicitud. En WhatsApp

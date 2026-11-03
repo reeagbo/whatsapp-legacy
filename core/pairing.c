@@ -34,9 +34,68 @@ struct wa_pair_session {
   size_t output_count;
 
   unsigned counter;
+  char debug_log[32768];
+  size_t debug_used;
+  unsigned debug_sequence;
 };
 
+/* Deliberately logs protocol metadata only: never payloads, IDs or key bytes. */
+static void trace(wa_pair_session *s, const char *format, ...) {
+  if (!s || s->debug_used >= sizeof s->debug_log - 64) return;
+  char message[768];
+  va_list args; va_start(args, format);
+  vsnprintf(message, sizeof message, format, args); va_end(args);
+  size_t room = sizeof s->debug_log - s->debug_used;
+  int n = snprintf(s->debug_log + s->debug_used, room,
+                   "C%04u state=%d %s\n", ++s->debug_sequence, s->state, message);
+  if (n < 0) return;
+  if ((size_t)n >= room - 64) {
+    const char end[] = "[native trace truncated; export the current log]\n";
+    size_t at = sizeof s->debug_log - sizeof end;
+    memcpy(s->debug_log + at, end, sizeof end);
+    s->debug_used = sizeof s->debug_log - 1;
+  } else s->debug_used += (size_t)n;
+}
+const char *wa_pair_debug_log(const wa_pair_session *s) { return s ? s->debug_log : ""; }
+void wa_pair_debug_clear(wa_pair_session *s) {
+  if (s) { OPENSSL_cleanse(s->debug_log, sizeof s->debug_log); s->debug_used = 0; }
+}
+static const char *safe_tag(const char *tag) {
+  static const char *const names[] = {"iq", "pair-device", "pair-success", "device-identity",
+    "device", "platform", "biz", "ref", "pair-device-sign", "link_code_companion_reg",
+    "link_code_pairing_ref", "link_code_pairing_wrapped_key_bundle", "companion_identity_public",
+    "notification", "stream:error", "failure", "success", "error", "ack", "ib", "ping",
+    "link_code_pairing_wrapped_companion_ephemeral_pub", "companion_server_auth_key_pub",
+    "companion_platform_id", "companion_platform_display", "link_code_pairing_nonce",
+    "primary_identity_pub", "link_code_pairing_wrapped_primary_ephemeral_pub", "edge_routing",
+    "routing_info", "xmlstreamend"};
+  if (tag) for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+    if (!strcmp(tag, names[i])) return names[i];
+  return "<other>";
+}
+static const char *safe_type(const char *type) {
+  if (!type) return "-";
+  const char *const types[] = {"get", "set", "result", "error", "link_code_companion_reg"};
+  for (size_t i=0;i<sizeof types/sizeof types[0];i++) if(!strcmp(type,types[i]))return types[i];
+  return "<other>";
+}
+static const char *safe_code(const char *code) {
+  return code && strlen(code) > 0 && strlen(code) <= 4 &&
+    strspn(code,"0123456789") == strlen(code) ? code : "<absent-or-redacted>";
+}
+static void trace_node(wa_pair_session *s, const char *direction, const wa_node *n) {
+  if (!n) return;
+  const char *code = wa_node_get(n,"code"); if(!code)code=wa_node_get(n,"reason");
+  trace(s,"%s NODE tag=%s type=%s code=%s attrs=%zu data_bytes=%zu",direction,
+        safe_tag(n->tag),safe_type(wa_node_get(n,"type")),safe_code(code),n->attr_count,n->data_len);
+  unsigned count=0;
+  for(const wa_node *child=n->child;child&&count<16;child=child->next,count++)
+    trace(s,"%s CHILD tag=%s code=%s data_bytes=%zu",direction,safe_tag(child->tag),
+          safe_code(wa_node_get(child,"code")),child->data_len);
+}
+
 static int fail(wa_pair_session *s, const char *message) {
+  trace(s, "FAIL %s", message);
   s->state = -1;
   snprintf(s->status, sizeof s->status, "%s", message);
 
@@ -125,6 +184,7 @@ wa_pair_session *wa_pair_create(const char *path, const char *phone) {
     return NULL;
 
   s->state = 1;
+  trace(s,"SESSION_CREATE mode=%s", *phone ? "pair-code" : "check-session");
   strcpy(s->path, path);
   strcpy(s->phone, phone);
   s->input = malloc(MAX_FRAME + 3);
@@ -136,6 +196,7 @@ wa_pair_session *wa_pair_create(const char *path, const char *phone) {
 
     return s;
   }
+  trace(s,"IDENTITY_READY stored_account=%s; NOISE_INITIALIZED",s->identity.jid[0]?"yes":"no");
   snprintf(s->status, sizeof s->status,
            "Claves Signal comprobadas y guardadas. Conectando por TLS...");
 
@@ -168,6 +229,7 @@ static int queue_raw(wa_pair_session *s, const uint8_t *data, size_t n,
   }
   s->output[s->output_count].data = out;
   s->output[s->output_count++].len = written;
+  trace(s,"TX_FRAME_QUEUED bytes=%zu intro=%d pending=%zu",written,intro,s->output_count);
 
   return 1;
 }
@@ -184,6 +246,7 @@ int wa_pair_start(wa_pair_session *s) {
     return fail(s, "No se pudo construir ClientHello.");
 
   s->hello_sent = 1;
+  trace(s,"CLIENT_HELLO_READY");
   snprintf(s->status, sizeof s->status,
            "TLS conectado. Comprobando el certificado Noise del servidor...");
 
@@ -202,6 +265,7 @@ void wa_pair_output_done(wa_pair_session *s) {
   if (!s || !s->output_count)
     return;
   free(s->output[0].data);
+  trace(s,"TX_FRAME_DEQUEUED bytes=%zu",s->output[0].len);
   s->output_count--;
   memmove(s->output, s->output + 1, s->output_count * sizeof s->output[0]);
 }
@@ -216,6 +280,7 @@ static int send_node(wa_pair_session *s, wa_tree *t) {
   if (!t)
     return fail(s, "Memoria insuficiente.");
 
+  trace_node(s,"TX",t->root);
   uint8_t *out = malloc(MAX_FRAME), *ct = malloc(MAX_FRAME + 16);
   size_t n = 0, z = 0;
 
@@ -269,6 +334,7 @@ static wa_node *data_node(wa_tree *t, wa_node *p, const char *tag,
   return n;
 }
 static int request_code(wa_pair_session *s) {
+  trace(s,"PAIR_CODE_REQUEST_BEGIN");
   const char *alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
   uint8_t random[5], wrapped[80];
@@ -316,6 +382,7 @@ static int request_code(wa_pair_session *s) {
     return fail(s, "No se pudo solicitar el codigo.");
 
   s->state = 2;
+  trace(s,"PAIR_CODE_REQUEST_QUEUED waiting_for_iq_result");
   snprintf(s->status, sizeof s->status,
            "Canal autenticado. Esperando la aceptacion de la solicitud de "
            "codigo...");
@@ -323,6 +390,7 @@ static int request_code(wa_pair_session *s) {
   return 1;
 }
 static int handle_link(wa_pair_session *s, const wa_node *n) {
+  trace(s,"PRIMARY_LINK_NOTIFICATION_RECEIVED");
   wa_node *r = wa_node_child(n, "link_code_companion_reg"),
           *ref = wa_node_child(r, "link_code_pairing_ref"),
           *pk = wa_node_child(r, "primary_identity_pub"),
@@ -368,6 +436,7 @@ static int handle_link(wa_pair_session *s, const wa_node *n) {
     return fail(s, "No se pudo guardar o enviar la prueba de vinculacion.");
 
   s->state = 2;
+  trace(s,"PAIR_KEY_BUNDLE_QUEUED adv_secret_saved=yes");
   snprintf(s->status, sizeof s->status,
            "Codigo recibido por el movil principal. Verificando la identidad "
            "de la cuenta...");
@@ -395,6 +464,7 @@ static int notification_ack(wa_pair_session *s, const wa_node *n) {
   return ok;
 }
 static int pair_success(wa_pair_session *s, const wa_node *n) {
+  trace(s,"PAIR_SUCCESS_VERIFY_BEGIN");
   wa_node *pair = wa_node_child(n, "pair-success"),
           *di = wa_node_child(pair, "device-identity"),
           *device = wa_node_child(pair, "device");
@@ -435,6 +505,7 @@ static int pair_success(wa_pair_session *s, const wa_node *n) {
   if (pb_number(dd.ptr, dd.len, 5, &device_type) && device_type != 0)
     return fail(s, "Tipo de dispositivo no compatible.");
 
+  trace(s,"ACCOUNT_HMAC_VERIFIED");
   uint8_t message[1090] = {6, 0}, sig[64];
   memcpy(message + 2, dd.ptr, dd.len);
   memcpy(message + 2 + dd.len, s->identity.identity_public, 32);
@@ -442,6 +513,7 @@ static int pair_success(wa_pair_session *s, const wa_node *n) {
   if (!wa_verify(account_pk.ptr, message, dd.len + 34, account_sig.ptr))
     return fail(s, "Firma de identidad del movil principal no valida.");
 
+  trace(s,"ACCOUNT_SIGNATURE_VERIFIED");
   message[1] = 1;
   memcpy(message + 34 + dd.len, account_pk.ptr, 32);
 
@@ -490,6 +562,7 @@ static int pair_success(wa_pair_session *s, const wa_node *n) {
     return fail(s, "No se pudo enviar la firma del dispositivo.");
 
   s->proof = 1;
+  trace(s,"DEVICE_SIGNATURE_QUEUED verified_identity_saved=yes");
   snprintf(s->status, sizeof s->status,
            "Identidad verificada y guardada. Esperando la confirmacion final "
            "del servidor...");
@@ -497,6 +570,7 @@ static int pair_success(wa_pair_session *s, const wa_node *n) {
   return 1;
 }
 static int handle_node(wa_pair_session *s, const wa_node *n) {
+  trace_node(s,"RX",n);
   const char *type = wa_node_get(n, "type"), *id = wa_node_get(n, "id");
 
   if (!strcmp(n->tag, "iq") && wa_node_child(n, "pair-device")) {
@@ -508,6 +582,7 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
 
     if (!s->phone[0]) {
       s->state = 6;
+      trace(s,"ANONYMOUS_CHANNEL_ACCEPTED");
       snprintf(s->status, sizeof s->status,
                "Canal TLS/Noise y registro inicial aceptados por el servidor. "
                "Sin cuenta vinculada.");
@@ -526,6 +601,7 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
     s->code_ack = 1;
 
     s->state = 3;
+    trace(s,"PAIR_CODE_ACKNOWLEDGED code_visible=yes");
     snprintf(s->status, sizeof s->status,
              "Codigo aceptado por el servidor. Introducelo en WhatsApp > "
              "Dispositivos vinculados > Vincular con numero.");
@@ -556,6 +632,7 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
 
     if (code && !strcmp(code, "515") && s->proof) {
       s->state = 4;
+      trace(s,"PAIRING_CONFIRMED server_restart=515");
       snprintf(s->status, sizeof s->status,
                "Vinculacion autenticada. Claves y certificado guardados. "
                "Puedes comprobar la sesion al volver a conectar.");
@@ -575,6 +652,7 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
       return fail(s, "Inicio de sesion sin identidad guardada.");
 
     s->state = 5;
+    trace(s,"STORED_SESSION_AUTHENTICATED");
     snprintf(s->status, sizeof s->status,
              "Sesion autenticada con las claves guardadas. Envio y recepcion "
              "de mensajes pendientes.");
@@ -635,11 +713,17 @@ static int frame(wa_pair_session *s, const uint8_t *in, size_t n) {
     uint8_t enc[48], payload[4096], finish[5000];
     size_t len = 0, z = 0;
 
-    if (!wa_parse_server_hello(in, n, &hello) ||
-        !wa_process_server_hello(&s->noise, &hello, s->identity.noise_private,
-                                 s->identity.noise_public, enc))
-      return fail(s, "Certificado o negociacion Noise no validos. No se ha "
-                     "enviado el registro.");
+    trace(s,"SERVER_HELLO_FRAME bytes=%zu",n);
+    if (!wa_parse_server_hello(in, n, &hello)) return fail(s,"ServerHello Protobuf no valido.");
+    trace(s,"SERVER_HELLO_PARSED ephemeral_bytes=%zu static_bytes=%zu certificate_bytes=%zu",
+          hello.ephemeral_len,hello.static_len,hello.payload_len);
+    const char *failed_stage = NULL;
+    if (!wa_process_server_hello_ex(&s->noise, &hello, s->identity.noise_private,
+                                   s->identity.noise_public, enc, &failed_stage)) {
+      trace(s,"NOISE_HANDSHAKE_FAILED stage=%s",failed_stage?failed_stage:"unknown");
+      return fail(s,"Certificado o negociacion Noise no validos. No se ha enviado el registro.");
+    }
+    trace(s,"NOISE_CERTIFICATE_VERIFIED");
 
     wa_registration r = {
         s->identity.registration_id,  1,
@@ -650,6 +734,7 @@ static int frame(wa_pair_session *s, const uint8_t *in, size_t n) {
                  ? login_payload(s, payload, sizeof payload, &len)
                  : wa_registration_payload(&r, payload, sizeof payload, &len);
 
+    trace(s,"CLIENT_PAYLOAD_BUILT mode=%s bytes=%zu ok=%d",s->identity.jid[0]?"login":"registration",len,ok);
     if (!ok ||
         !wa_finish_noise(&s->noise, enc, payload, len, finish, sizeof finish,
                          &z) ||
@@ -657,6 +742,7 @@ static int frame(wa_pair_session *s, const uint8_t *in, size_t n) {
       return fail(s, "No se pudo completar ClientFinish.");
 
     s->finish_sent = 1;
+    trace(s,"CLIENT_FINISH_QUEUED TRANSPORT_KEYS_ACTIVE");
     snprintf(s->status, sizeof s->status,
              "Canal Noise autenticado. Registro inicial enviado; esperando "
              "respuesta...");
@@ -674,6 +760,7 @@ static int frame(wa_pair_session *s, const uint8_t *in, size_t n) {
 
     return fail(s, "Respuesta cifrada no valida.");
   }
+  trace(s,"TRANSPORT_DECRYPT_OK plaintext_bytes=%zu",len);
   wa_tree *t = wa_node_decode(plain, len);
   free(plain);
 
@@ -688,6 +775,7 @@ int wa_pair_feed(wa_pair_session *s, const uint8_t *bytes, size_t n) {
   if (!s || s->state < 0 || !s->hello_sent || !bytes)
     return 0;
 
+  trace(s,"RX_WEBSOCKET_BINARY bytes=%zu buffered=%zu",n,s->input_len);
   while (n) {
     size_t room = MAX_FRAME + 3 - s->input_len, z = n < room ? n : room;
 
@@ -708,6 +796,7 @@ int wa_pair_feed(wa_pair_session *s, const uint8_t *bytes, size_t n) {
       if (s->input_len < len + 3)
         break;
 
+      trace(s,"RX_WA_FRAME bytes=%zu transport=%d",len,s->noise.transport);
       if (!frame(s, s->input + 3, len))
         return 0;
 

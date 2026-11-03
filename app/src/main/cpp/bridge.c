@@ -127,3 +127,11 @@ Java_org_reeagbo_whatsapplegacy_MainActivity_nativeOutput(JNIEnv *env,
   }
   return out;
 }
+
+JNIEXPORT jstring JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeLog(
+    JNIEnv *env, jobject self, jlong handle) {
+  (void)self;
+  jstring out=(*env)->NewStringUTF(env,wa_pair_debug_log(session(handle)));
+  if(out)wa_pair_debug_clear(session(handle));
+  return out;
+}

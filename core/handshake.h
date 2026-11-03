@@ -10,6 +10,10 @@
 int wa_process_server_hello(wa_noise *n, const wa_server_hello *hello,
     const uint8_t local_static_priv[32], const uint8_t local_static_pub[32],
     uint8_t encrypted_static[48]);
+/* Returns a static, non-sensitive stage name on failure; validation is identical. */
+int wa_process_server_hello_ex(wa_noise *n,const wa_server_hello *hello,
+ const uint8_t local_static_priv[32],const uint8_t local_static_pub[32],
+ uint8_t encrypted_static[48],const char **failed_stage);
 int wa_make_client_finish(const uint8_t encrypted_static[48], const uint8_t *encrypted_payload,
     size_t encrypted_payload_len, uint8_t *out, size_t capacity, size_t *written);
 /* Complete the final cryptographic handshake step for an already authenticated

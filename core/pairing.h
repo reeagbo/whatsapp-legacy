@@ -17,4 +17,7 @@ void wa_pair_output_done(wa_pair_session *s);
 int wa_pair_state(const wa_pair_session *s);
 const char *wa_pair_status(const wa_pair_session *s);
 const char *wa_pair_code(const wa_pair_session *s);
+/* Safe ASCII diagnostic metadata, bounded to 32 KiB until drained. */
+const char *wa_pair_debug_log(const wa_pair_session *s);
+void wa_pair_debug_clear(wa_pair_session *s);
 #endif

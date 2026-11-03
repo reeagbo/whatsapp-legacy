@@ -51,26 +51,35 @@ static int check_chain(const uint8_t *buf,size_t len,const uint8_t server_static
  signal_context_destroy(ctx);
  return valid;
 }
+int wa_process_server_hello_ex(wa_noise *n,const wa_server_hello *h,
+ const uint8_t local_private[32],const uint8_t local_public[32],uint8_t static_out[48],const char **failed_stage){
+ if(failed_stage)*failed_stage="validate_input";
+ if(!n||!h||!local_private||!local_public||!static_out||n->transport||h->ephemeral_len!=32||h->static_len!=48||h->payload_len<16||h->payload_len>65536)return 0;
+ uint8_t dh[32],server_static[32],cert[65536];size_t len=sizeof server_static,cert_len=sizeof cert,e=0;
+ int ok=0;
+ #define STEP(label,expr) do { if(failed_stage)*failed_stage=label; if(!(expr))goto done; } while(0)
+ STEP("authenticate_ephemeral",wa_noise_auth(n,h->ephemeral,32));
+ STEP("ephemeral_ecdh",wa_noise_dh(n->ephemeral_private,h->ephemeral,dh));
+ STEP("mix_ephemeral",wa_noise_mix(n,dh,32));
+ STEP("decrypt_server_static",wa_noise_decrypt(n,h->server_static,h->static_len,server_static,&len));
+ STEP("server_static_length",len==32);
+ STEP("server_static_ecdh",wa_noise_dh(n->ephemeral_private,server_static,dh));
+ STEP("mix_server_static",wa_noise_mix(n,dh,32));
+ STEP("decrypt_certificate",wa_noise_decrypt(n,h->payload,h->payload_len,cert,&cert_len));
+ STEP("verify_certificate_chain",check_chain(cert,cert_len,server_static));
+ STEP("encrypt_client_static",wa_noise_encrypt(n,local_public,32,static_out,&e)&&e==48);
+ STEP("client_static_ecdh",wa_noise_dh(local_private,h->ephemeral,dh));
+ STEP("mix_client_static",wa_noise_mix(n,dh,32));
+ ok=1;
+ if(failed_stage)*failed_stage=NULL;
+ done:
+ OPENSSL_cleanse(dh,sizeof dh);OPENSSL_cleanse(server_static,sizeof server_static);OPENSSL_cleanse(cert,sizeof cert);
+ #undef STEP
+ return ok;
+}
 int wa_process_server_hello(wa_noise *n,const wa_server_hello *h,
  const uint8_t local_private[32],const uint8_t local_public[32],uint8_t static_out[48]){
- if(!n||!h||!local_private||!local_public||!static_out||n->transport||h->ephemeral_len!=32||h->static_len!=48||h->payload_len<16||h->payload_len>65536)return 0;
- uint8_t dh[32],server_static[32],cert[65536];size_t len=sizeof server_static,cert_len=sizeof cert;
- int ok=wa_noise_auth(n,h->ephemeral,32)
-  && wa_noise_dh(n->ephemeral_private,h->ephemeral,dh)
-  && wa_noise_mix(n,dh,32)
-  && wa_noise_decrypt(n,h->server_static,h->static_len,server_static,&len)
-  && len==32
-  && wa_noise_dh(n->ephemeral_private,server_static,dh)
-  && wa_noise_mix(n,dh,32)
-  && wa_noise_decrypt(n,h->payload,h->payload_len,cert,&cert_len)
-  && check_chain(cert,cert_len,server_static);
- if(ok){size_t e=0;
-  ok=wa_noise_encrypt(n,local_public,32,static_out,&e)&&e==48
-   && wa_noise_dh(local_private,h->ephemeral,dh)
-   && wa_noise_mix(n,dh,32);
- }
- OPENSSL_cleanse(dh,sizeof dh);OPENSSL_cleanse(server_static,sizeof server_static);
- OPENSSL_cleanse(cert,sizeof cert);return ok;
+ return wa_process_server_hello_ex(n,h,local_private,local_public,static_out,NULL);
 }
 int wa_make_client_finish(const uint8_t encrypted_static[48],const uint8_t *payload,size_t plen,uint8_t *out,size_t cap,size_t *written){
  if(!encrypted_static||!payload||!out||!written||plen<16)return 0;
