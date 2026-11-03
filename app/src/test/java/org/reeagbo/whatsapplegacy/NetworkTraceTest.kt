@@ -3,6 +3,9 @@ package org.reeagbo.whatsapplegacy
 import okhttp3.OkHttpClient
 import okhttp3.CertificatePinner
 import javax.net.ssl.SSLPeerUnverifiedException
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
+import java.security.KeyStore
 import org.junit.Assert.*
 import org.junit.Test
 import java.net.InetAddress
@@ -29,7 +32,9 @@ class NetworkTraceTest {
         val traced = NetworkTrace.client(base) { }
         assertSame(base.hostnameVerifier, traced.hostnameVerifier)
         try {
-            traced.certificatePinner.check("web.whatsapp.com", emptyList())
+            val roots = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(null as KeyStore?) }
+            val trustedRoot = roots.trustManagers.filterIsInstance<X509TrustManager>().single().acceptedIssuers.first()
+            traced.certificatePinner.check("web.whatsapp.com", listOf(trustedRoot))
             fail("Configured certificate pins must remain enforced")
         } catch (expected: SSLPeerUnverifiedException) { /* retained */ }
     }
