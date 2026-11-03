@@ -63,7 +63,7 @@ considerar que Android borrará sus claves privadas.
 
 Cada push ejecuta `.github/workflows/android.yml`: pruebas C99, sonda online sin
 número de teléfono (diagnóstica, no bloqueante), compilación y Android Lint.
-Descarga el artefacto con versión `whatsapp-legacy-0.6-debug` de la ejecución correcta.
+Descarga el artefacto con versión `whatsapp-legacy-0.7-debug` de la ejecución correcta.
 
 Para pruebas locales: `bash core/build.sh`. Requiere CMake, compilador C99,
 OpenSSL y zlib de desarrollo. Para la sonda online sin cuenta: `core/wa_probe`.
@@ -115,3 +115,16 @@ entradas inválidas. ASan/UBSan sin errores. Actions compila tres ABI, ejecuta J
 unit tests y Lint, y prueba +/validación/navegación/persistencia en un emulador.
 El login real ya se confirmó en 0.5; el primer envío real de 0.6 sigue pendiente
 de la prueba con el usuario. Ninguna prueba automática usa cuentas o envía mensajes.
+
+
+## Recepción de paquetes grandes (0.7)
+
+El primer envío real de 0.6 llegó al destinatario y el log recibió confirmación
+de entrega. Al iniciar aparecieron dos avisos Signal `-12` después de paquetes
+cifrados de unos 30/61 KiB: el receptor solo reservaba 16 KiB para el texto plano.
+0.7 reserva memoria según el tamaño acotado de cada paquete y la libera al
+terminar; no relaja ninguna comprobación criptográfica. Los mensajes descifrados
+cuyo contenido todavía no está soportado se registran como `ignored-payload`,
+sin una alerta falsa de descifrado. Esto no implementa sincronización de historial
+ni permite recuperar automáticamente los paquetes ya confirmados por 0.6.
+Las pruebas incluyen 30/60 KiB y texto posterior en la misma sesión Signal.

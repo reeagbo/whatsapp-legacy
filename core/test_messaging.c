@@ -49,11 +49,30 @@ int main(void){
  uint8_t ct[4096];size_t cn=0;int pk=0;assert(wa_signal_encrypt(bob,"11111111:1@lid",encoded,en,ct,sizeof ct,&cn,&pk)>=0&&!pk);
  t=wa_tree_create();wa_node *root=wa_node_add(t,NULL,"message");assert(wa_node_attr(root,"id","incoming-test")&&wa_node_attr(root,"from","22222222:0@lid"));wa_node *enc=data(t,root,"enc",ct,cn);assert(enc&&wa_node_attr(enc,"type","msg"));assert(wa_messenger_node(m,root));
  const wa_message_event *e=wa_messenger_event(m);assert(e&&!strcmp(e->kind,"message")&&!strcmp(e->text,(const char*)reply)&&!strcmp(e->jid,"34222222222@s.whatsapp.net"));wa_tree_free(t);clear_events(m);
+ /* Regression for actual 30/61 KiB startup payloads: decrypt a large
+  * non-text protobuf without a Signal warning, then receive ordinary text on
+  * the same ratchet. No history-sync implementation is implied by ignoring it. */
+ for(size_t size=30000;size<=60000;size+=30000){
+  uint8_t *payload=malloc(size),*large_plain=malloc(size+32),*large_cipher=malloc(size+1024);
+  assert(payload&&large_plain&&large_cipher);memset(payload,'x',size);size_t plain_len=0,cipher_len=0;
+  assert(pb(99,payload,size,large_plain,size+32,&plain_len));large_plain[plain_len++]=1;
+  assert(wa_signal_encrypt(bob,"11111111:1@lid",large_plain,plain_len,large_cipher,size+1024,&cipher_len,&pk)>=0&&!pk);
+  t=wa_tree_create();root=wa_node_add(t,NULL,"message");assert(wa_node_attr(root,"id","large-incoming")&&wa_node_attr(root,"from","22222222:0@lid"));
+  enc=data(t,root,"enc",large_cipher,cipher_len);assert(enc&&wa_node_attr(enc,"type","msg"));assert(wa_messenger_node(m,root));
+  e=wa_messenger_event(m);assert(e&&!strcmp(e->kind,"ignored-payload"));
+  wa_tree *response=captured(&c);assert(!strcmp(response->root->tag,"ack"));wa_tree_free(response);
+  assert(m->event_count==1);clear_events(m);wa_tree_free(t);free(payload);free(large_plain);free(large_cipher);
+ }
+ /* The next small message must still decrypt after both large payloads. */
+ assert(wa_signal_encrypt(bob,"11111111:1@lid",encoded,en,ct,sizeof ct,&cn,&pk)>=0);
+ t=wa_tree_create();root=wa_node_add(t,NULL,"message");assert(wa_node_attr(root,"id","after-large")&&wa_node_attr(root,"from","22222222:0@lid"));
+ enc=data(t,root,"enc",ct,cn);assert(enc&&wa_node_attr(enc,"type",pk?"pkmsg":"msg"));assert(wa_messenger_node(m,root));
+ e=wa_messenger_event(m);assert(e&&!strcmp(e->kind,"message")&&!strcmp(e->text,(const char*)reply));wa_tree_free(t);clear_events(m);
  /* Reordered receipts must remain distinguishable. UI persists monotonic state. */
  t=wa_tree_create();root=wa_node_add(t,NULL,"receipt");assert(wa_node_attr(root,"id",id)&&wa_node_attr(root,"from","22222222@lid")&&wa_node_attr(root,"type","read"));assert(wa_messenger_node(m,root));assert(wa_messenger_event(m)->state==4);wa_tree_free(t);clear_events(m);
  /* TOFU is pinned; no silent key replacement on a changed identity. */
  uint8_t pre[32];assert(wa_signal_prekey(primary,51,pre));assert(wa_signal_bundle(m->signal,"22222222:0@lid",pi.registration_id,pi.identity_public,1,pi.prekey_public,pi.prekey_signature,51,pre)==-1010);
  m->ready=1;assert(!wa_messenger_send(m,"bad@evil",id,message,sizeof message-1));uint8_t bad[]={0xc0,0x80};assert(!wa_messenger_send(m,"34222222222@s.whatsapp.net",id,bad,sizeof bad));
  wa_messenger_free(m);wa_signal_free(bob);wa_signal_free(primary);wa_storage_posix_close(&a);wa_storage_posix_close(&b);wa_storage_posix_close(&p);cleanup(pa);cleanup(pbdir);cleanup(pp);assert(!rmdir(dir));
- puts("PASS: prekey publication, LID device lookup, all-device Signal encryption, own-device copy, UTF-8 text, bidirectional persistent ratchet, read receipts, identity-change rejection and malformed-input rejection");return 0;
+ puts("PASS: prekey publication, LID device lookup, all-device Signal encryption, own-device copy, UTF-8 text, bidirectional persistent ratchet, 30/60 KiB payloads and subsequent text, read receipts, identity-change rejection and malformed-input rejection");return 0;
 }

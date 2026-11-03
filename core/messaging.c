@@ -157,16 +157,25 @@ static int incoming(wa_messenger *m,const wa_node *node){
  char crypto[128];copy(crypto,sizeof crypto,sender);
  if(strstr(sender,"@s.whatsapp.net")){char lid[128];if(mapped(m,sender,lid)&&strstr(lid,"@lid"))device(lid,crypto,device_id(sender));}
  int got=0;for(wa_node *e=node->child;e;e=e->next){const char *type=wa_node_get(e,"type");if(strcmp(e->tag,"enc")||!type||!e->data||(strcmp(type,"pkmsg")&&strcmp(type,"msg")))continue;
-  uint8_t plaintext[16384];size_t n=0;int r=wa_signal_decrypt(m->signal,crypto,!strcmp(type,"pkmsg"),e->data,e->data_len,plaintext,sizeof plaintext,&n);
-  if(r<0){event(m,"notice",id,frombase,"No se pudo descifrar un mensaje (Signal).",r);continue;}
-  unsigned pad=n?plaintext[n-1]:0;if(!pad||pad>16||pad>n){OPENSSL_cleanse(plaintext,sizeof plaintext);continue;}int valid=1;for(unsigned j=0;j<pad;j++)if(plaintext[n-j-1]!=pad)valid=0;
+  /* Serialized Signal ciphertext includes framing/MAC and optional prekey
+   * metadata; its plaintext fits in at most that many bytes. Allocate only for
+   * this bounded stanza, rather than capping valid sync payloads at 16 KiB. */
+  size_t capacity=e->data_len;
+  if(!capacity||capacity>WA_NODE_BYTES){event(m,"notice",id,frombase,"Paquete recibido demasiado grande.",-1);continue;}
+  uint8_t *plaintext=malloc(capacity);
+  if(!plaintext){event(m,"notice",id,frombase,"Memoria insuficiente para procesar un mensaje recibido.",-12);continue;}
+  size_t n=0;int r=wa_signal_decrypt(m->signal,crypto,!strcmp(type,"pkmsg"),e->data,e->data_len,plaintext,capacity,&n);
+  if(r<0){event(m,"notice",id,frombase,r==-12?"Memoria insuficiente para procesar un mensaje recibido.":"No se pudo descifrar un mensaje (Signal).",r);OPENSSL_cleanse(plaintext,capacity);free(plaintext);continue;}
+  unsigned pad=n?plaintext[n-1]:0;
+  if(!pad||pad>16||pad>n){event(m,"bad-padding",id,frombase,"",0);OPENSSL_cleanse(plaintext,capacity);free(plaintext);continue;}
+  int valid=1;for(unsigned j=0;j<pad;j++)if(plaintext[n-j-1]!=pad)valid=0;
   char text[WA_TEXT_MAX+1],dest[128]="",peer[128];int own=0;
   if(valid&&decode_text(plaintext,n-pad,text,dest,&own,0)){
-   if(own){if(!base(dest,peer)){OPENSSL_cleanse(plaintext,sizeof plaintext);continue;}}
+   if(own){if(!base(dest,peer)){OPENSSL_cleanse(plaintext,capacity);free(plaintext);continue;}}
    else if(!mapped(m,frombase,peer)||!strstr(peer,"@s.whatsapp.net"))copy(peer,sizeof peer,frombase);
    event(m,own?"sent-copy":"message",id,peer,text,own?2:0);got=1;
-  }
-  OPENSSL_cleanse(plaintext,sizeof plaintext);
+  } else event(m,valid?"ignored-payload":"bad-padding",id,frombase,"",0);
+  OPENSSL_cleanse(plaintext,capacity);free(plaintext);
  }
  /* Unsupported payloads are acknowledged without claiming decryption/delivery. */
  int ok=ack(m,node,"message");
