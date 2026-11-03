@@ -32,4 +32,12 @@ class StabilityTest {
         policy.reset()
         assertEquals(2_000L,policy.nextDelay(70_000))
     }
+    @Test fun restoredNetworkGetsAFreshRetryBudget() {
+        val policy=ReconnectPolicy()
+        repeat(3) { assertNotNull(policy.nextDelay(it * 10_000L)) }
+        assertNull(policy.nextDelay(40_000L))
+        // MainActivity calls reset on a real unavailable -> available transition.
+        policy.reset()
+        assertEquals(2_000L,policy.nextDelay(50_000L))
+    }
 }

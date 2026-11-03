@@ -6,6 +6,48 @@ claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
 OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
 y de nombre del servidor, sin excepciones de confianza.
 
+## Cambios guardados después de 0.8 (sin nueva APK)
+
+La 0.8 real recibió tres textos y tres copias de otros dispositivos en el log
+aportado el 3 de noviembre, con seis entregas confirmadas a SQLite. Esa sesión
+no contiene errores de Signal; el error «Frame demasiado grande» anterior al
+marcador `APP_OPEN version=0.8-debug` corresponde a una ejecución previa.
+El usuario confirma recepción de mensajes y aparición de conversaciones.
+
+Cambios de fuente pendientes de compilar por petición expresa:
+
+- Reconexión cuando Android anuncia que vuelve la red, aunque se hayan agotado
+  los tres reintentos. Una desconexión manual o un error de almacenamiento
+  desactiva esa reanudación hasta pulsar Conectar. No se reenvía texto incierto.
+- Relación LID/número aprendida del servidor y de las consultas de dispositivos,
+  persistida en C99. Se aceptan pares entre dominios correctos y se rechaza que
+  un LID ya guardado cambie de persona. Las sesiones Signal no se renombran.
+- SQLite v3 une conversaciones existentes LID/número en una sola transacción.
+  Conserva texto, nombres manuales, fechas y el estado de entrega más avanzado;
+  el inbox pendiente se confirma con su dirección original tras el guardado.
+- Nombres: manual > agenda Android autorizada > nombre recibido (`notify`) >
+  número. **⋮ → Usar nombres de la agenda** solicita el permiso cuando haga
+  falta. La consulta se hace fuera del hilo de interfaz y no se sube la agenda.
+  Tocar el título de un chat o mantener pulsada una fila permite nombrarlo.
+- Si falta una correspondencia LID/número, se conserva una etiqueta diferenciada
+  por el final del identificador. No se inventa un teléfono ni se unen personas
+  por compartir nombre. Los nombres recibidos se aprenden con nuevos textos;
+  esto todavía no descarga la libreta sincronizada ni recupera historial.
+- Un fallo al reservar memoria para texto recibido ya no confirma el paquete:
+  se cierra la conexión conservando la posibilidad de reentrega del servidor.
+
+Comprobación sin compilación: `python scripts/check-storage-sql.py` ejecuta el SQL
+literal de migraciones v1/v2→v3, cierre/reapertura, rollback en cada paso de la
+unión, duplicados por dirección, nombres y confirmaciones. Pasó localmente.
+Las pruebas C/JVM y el emulador ampliados están escritos, sin ejecutar todavía.
+
+Pendiente en móvil con la próxima versión solicitada: cerrar/abrir conservando
+sesión y mensajes; cortar/restaurar Wi-Fi y datos; desconectar manualmente y
+verificar que no se reconecta; recibir el mismo mensaje sin duplicarlo; aceptar,
+denegar y revocar agenda; comprobar un contacto conocido por número y por LID.
+
+Referencia de atributos del protocolo: [decode-wa-message.ts de Baileys](https://github.com/WhiskeySockets/Baileys/blob/master/src/Utils/decode-wa-message.ts).
+
 ## Versión 0.4-debug: código sin espera de IQ
 
 Corrige la espera indefinida observada en el log de 0.3: el código es local y se

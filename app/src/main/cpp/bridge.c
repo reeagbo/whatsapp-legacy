@@ -171,3 +171,11 @@ JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeSt
  int ok=wa_pair_stored(session(h),i,j,outgoing==JNI_TRUE);
  (*env)->ReleaseStringUTFChars(env,jid,j);(*env)->ReleaseStringUTFChars(env,id,i);return ok?JNI_TRUE:JNI_FALSE;
 }
+
+JNIEXPORT jstring JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeResolve(JNIEnv *env,jobject self,jlong h,jstring jid) {
+ (void)self;if(!h||!jid)return NULL;
+ const char *j=(*env)->GetStringUTFChars(env,jid,NULL);if(!j)return NULL;
+ char resolved[128];int ok=wa_pair_resolve(session(h),j,resolved);
+ (*env)->ReleaseStringUTFChars(env,jid,j);
+ return ok?(*env)->NewStringUTF(env,resolved):NULL;
+}

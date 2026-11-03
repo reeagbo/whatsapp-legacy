@@ -329,6 +329,9 @@ int wa_pair_stored(wa_pair_session *s,const char *id,const char *jid,int outgoin
   if(s)trace(s,"INBOX_DATABASE_COMMIT confirmed=%d",ok);
   return ok;
 }
+int wa_pair_resolve(wa_pair_session *s,const char *jid,char out[128]) {
+  return s&&wa_messenger_resolve(s->messenger,jid,out);
+}
 void wa_pair_tick(wa_pair_session *s,uint64_t now) { if(s&&s->messenger)wa_messenger_tick(s->messenger,now); }
 const wa_message_event *wa_pair_event(const wa_pair_session *s) { return s?wa_messenger_event(s->messenger):NULL; }
 void wa_pair_event_done(wa_pair_session *s) {

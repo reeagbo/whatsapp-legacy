@@ -1,5 +1,10 @@
 package org.reeagbo.whatsapplegacy
 
+import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.net.ConnectivityManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -42,6 +47,7 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
+    private external fun nativeResolve(handle: Long, jid: String): String?
     private external fun nativeStored(handle: Long, id: String, jid: String, outgoing: Boolean): Boolean
     private external fun nativeEvent(handle: Long): Array<String>?
     private external fun nativeSend(handle: Long, jid: String, id: String, text: ByteArray): Boolean
@@ -95,6 +101,30 @@ class MainActivity : Activity() {
     private var pendingMessage: String? = null
     private val reconnectPolicy = ReconnectPolicy()
     private var sessionGeneration = 0
+    private var automaticReconnect = true
+    private var networkWasAvailable = false
+    private var networkReceiverRegistered = false
+    private val networkReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val available = networkAvailable()
+            val restored = available && !networkWasAvailable
+            networkWasAvailable = available
+            if (restored && automaticReconnect && !destroyed && File(filesDir,"identity.v1").exists()) {
+                debugLog.add("NETWORK_RESTORED reconnect=${connection==null}")
+                reconnectPolicy.reset()
+                if(connection==null) start("")
+            }
+        }
+    }
+    private lateinit var phoneContacts: PhoneContacts
+    private val contactWorker = Executors.newSingleThreadExecutor()
+    private var phoneNames: Map<String,String> = emptyMap()
+    private val checkedContacts = mutableSetOf<String>()
+    private var contactGeneration = 0
+    private var chatTitle: TextView? = null
+    private val contactRequest = 302
+    @Suppress("DEPRECATION")
+    private fun networkAvailable() = (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).activeNetworkInfo?.isConnected == true
     @Suppress("DEPRECATION")
     private fun palette(id: Int) = resources.getColor(id)
     private val green by lazy { palette(R.color.wa_accent) }
@@ -108,8 +138,61 @@ class MainActivity : Activity() {
     private fun shape(color: Int, radius: Int = 14) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
     private fun label(value: String, size: Float = 16f, color: Int = ink) = TextView(this).apply { text = value; textSize = size; setTextColor(color) }
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-    private fun display(jid: String) = if (jid.endsWith("@lid")) "Contacto vinculado" else "+" + jid.substringBefore('@').substringBefore(':')
-    private fun title(jid: String) = store.chats().firstOrNull { it.jid == jid }?.name?.takeIf { it.isNotBlank() } ?: display(jid)
+    private fun display(jid: String) = if (jid.endsWith("@lid")) "Contacto · …" + jid.substringBefore('@').takeLast(6) else "+" + jid.substringBefore('@').substringBefore(':')
+    private fun contactName(chat: ChatStore.Chat) = chat.name.takeIf { it.isNotBlank() }
+        ?: phoneNames[chat.jid] ?: chat.pushName.takeIf { it.isNotBlank() } ?: display(chat.jid)
+    private fun title(jid: String) = store.chats().firstOrNull { it.jid == store.resolve(jid) }?.let { contactName(it) } ?: display(jid)
+    private fun refreshConversation() {
+        val current = conversation
+        if (current == null) showList() else {
+            conversation = store.resolve(current)
+            chatTitle?.text = title(conversation!!)
+            refreshMessages()
+        }
+    }
+    private fun editName(jid: String) {
+        val value = EditText(this).apply { setSingleLine(true); hint="Nombre"; setText(store.chats().firstOrNull { it.jid==store.resolve(jid) }?.name.orEmpty()) }
+        AlertDialog.Builder(this).setTitle("Nombre del contacto").setMessage("Nombre local para esta conversación")
+            .setView(value).setNegativeButton("Cancelar",null).setPositiveButton("Guardar") { _,_ ->
+                try { store.setName(jid,value.text.toString().trim().take(100)); refreshConversation() }
+                catch(error: Exception) { storageFailure(error) }
+            }.show()
+    }
+    private fun scheduleContacts(force: Boolean = false) {
+        if (!::phoneContacts.isInitialized || destroyed) return
+        if (!phoneContacts.allowed()) {
+            contactGeneration++; phoneNames=emptyMap(); checkedContacts.clear(); refreshConversation(); return
+        }
+        if (force) { contactGeneration++; checkedContacts.clear(); phoneNames=emptyMap() }
+        val requested=store.chats().map { it.jid }.filter { it.endsWith("@s.whatsapp.net") && it !in checkedContacts }.toSet()
+        if (requested.isEmpty()) { if(force)refreshConversation(); return }
+        checkedContacts.addAll(requested)
+        val generation=contactGeneration
+        contactWorker.execute {
+            val names=try { phoneContacts.names(requested) } catch(error: Exception) {
+                debugLog.add("PHONEBOOK_LOOKUP_FAILED type=${error.javaClass.simpleName}")
+                emptyMap<String,String>()
+            }
+            handler.post {
+                if(!destroyed && generation==contactGeneration) {
+                    phoneNames=if(phoneContacts.allowed())phoneNames+names else emptyMap()
+                    refreshConversation()
+                }
+            }
+        }
+    }
+    private fun requestContactNames() {
+        if(Build.VERSION.SDK_INT>=23 && !phoneContacts.allowed()) requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS),contactRequest)
+        else scheduleContacts(true)
+    }
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
+        super.onRequestPermissionsResult(requestCode,permissions,results)
+        if(requestCode==contactRequest) {
+            scheduleContacts(true)
+            if(!phoneContacts.allowed()) Toast.makeText(this,"Sin acceso a la agenda: se usarán los nombres recibidos o los números",Toast.LENGTH_LONG).show()
+        }
+    }
+    override fun onResume() { super.onResume(); if(::store.isInitialized) scheduleContacts(true) }
     private fun action(text: String, description: String, click: () -> Unit) = Button(this).apply {
         this.text = text; contentDescription = description; setTextColor(green); textSize = 23f
         minWidth = dp(48); minimumWidth = dp(48); minHeight = dp(48); background = shape(Color.TRANSPARENT)
@@ -118,7 +201,7 @@ class MainActivity : Activity() {
     private fun header(name: String, chat: Boolean) {
         val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(10),dp(9),dp(10),dp(6)); setBackgroundColor(surface) }
         if (chat) bar.addView(action("‹", "Volver a conversaciones") { showList() }, LinearLayout.LayoutParams(dp(48),dp(48)))
-        bar.addView(label(name, if(chat) 21f else 26f).apply { setTypeface(null,Typeface.BOLD); maxLines=1; gravity=Gravity.CENTER_VERTICAL }, LinearLayout.LayoutParams(0,dp(52),1f).apply { gravity=Gravity.CENTER_VERTICAL })
+        bar.addView(label(name, if(chat) 21f else 26f).apply { setTypeface(null,Typeface.BOLD); maxLines=1; gravity=Gravity.CENTER_VERTICAL; if(chat) { chatTitle=this; contentDescription="Editar nombre del contacto"; setOnClickListener { conversation?.let { editName(it) } } } }, LinearLayout.LayoutParams(0,dp(52),1f).apply { gravity=Gravity.CENTER_VERTICAL })
         if (!chat) bar.addView(action("+", "Nueva conversación") { newConversation() },LinearLayout.LayoutParams(dp(52),dp(52)))
         bar.addView(action("⋮", "Conexión y diagnóstico") { showSettings() },LinearLayout.LayoutParams(dp(48),dp(52)))
         page.addView(bar)
@@ -126,6 +209,7 @@ class MainActivity : Activity() {
         page.addView(statusLabel)
     }
     private fun newPage() {
+        chatTitle=null
         page=column().apply { setBackgroundColor(canvas) }
         setContentView(page)
     }
@@ -140,7 +224,7 @@ class MainActivity : Activity() {
             addView(label("Pulsa + para añadir un número y escribirle.",16f,muted).apply { setPadding(0,dp(12),0,0) })
         })
         for(chat in chats) {
-            val name=chat.name.ifBlank { display(chat.jid) }
+            val name=contactName(chat)
             val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); setBackgroundColor(surface); minimumHeight=dp(86); isClickable=true; contentDescription="Abrir conversación con $name" }
             row.addView(label(name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),28) },LinearLayout.LayoutParams(dp(52),dp(52)))
             row.addView(column().apply {
@@ -149,7 +233,7 @@ class MainActivity : Activity() {
                 addView(label(chat.preview.ifBlank { "Conversación nueva" },14f,muted).apply { setSingleLine(true); ellipsize=android.text.TextUtils.TruncateAt.END; setPadding(0,dp(5),0,0) })
             },LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1f))
             row.addView(label(SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(chat.time)),12f,muted))
-            row.setOnClickListener { showChat(chat.jid) }; rows.addView(row)
+            row.setOnClickListener { showChat(chat.jid) }; row.setOnLongClickListener { editName(chat.jid); true }; rows.addView(row)
             rows.addView(View(this).apply { setBackgroundColor(palette(R.color.wa_divider)) },LinearLayout.LayoutParams(-1,dp(1)))
         }
         page.addView(ScrollView(this).apply { addView(rows) },LinearLayout.LayoutParams(-1,0,1f))
@@ -167,7 +251,7 @@ class MainActivity : Activity() {
         } };dialog.show()
     }
     private fun showChat(jid: String) {
-        conversation=jid;newPage();header(title(jid),true)
+        conversation=store.resolve(jid);newPage();header(title(conversation!!),true)
         messageList=column().apply { setPadding(dp(12),dp(16),dp(12),dp(16)) }
         messageScroll=ScrollView(this).apply { isFillViewport=true;addView(messageList) }
         page.addView(messageScroll,LinearLayout.LayoutParams(-1,0,1f))
@@ -204,6 +288,16 @@ class MainActivity : Activity() {
     }
     private fun applyEvents(events: List<Array<String>>) {
         try {
+        // Reconcile old LID chats as well as addresses in this batch. Persisted
+        // core mappings can predate the app update; no number is guessed.
+        val candidates=(store.chats().map { it.jid }+events.mapNotNull { it.getOrNull(2) }).filter { it.endsWith("@lid") }.toSet()
+        for(lid in candidates) {
+            val pn=connection?.resolve(lid)
+            if(pn!=null && pn.endsWith("@s.whatsapp.net")) {
+                if(store.link(lid,pn)) debugLog.add("CONTACT_ALIAS_RECONCILED")
+                else debugLog.add("CONTACT_ALIAS_CONFLICT ignored=true")
+            }
+        }
         for(e in events) {
             if(e.size!=5)continue;val state=e[4].toIntOrNull()?:0
             when(e[0]) {
@@ -215,11 +309,13 @@ class MainActivity : Activity() {
                     // The native inbox keeps the text until this SQLite commit succeeds.
                     connection?.stored(e[1],e[2],e[0]=="sent-copy")
                 }
+                "contact" -> if(e[2].isNotBlank()) store.learnName(e[2],e[3])
                 "notice" -> { statusText=e[3];if(state<0)Toast.makeText(this,e[3],Toast.LENGTH_LONG).show() }
             }
         }
         statusLabel.text=statusText
-        if(conversation!=null)refreshMessages() else showList()
+        refreshConversation()
+        scheduleContacts()
         updateSend()
         } catch (error: Exception) { storageFailure(error) }
     }
@@ -227,6 +323,7 @@ class MainActivity : Activity() {
         debugLog.failure("MESSAGE_STORAGE_FAILED",error)
         sessionGeneration++
         reconnectPolicy.reset()
+        automaticReconnect=false
         connection?.cancel();connection=null
         connected=false;pendingMessage=null
         render("No se pudieron guardar los mensajes. Revisa el espacio disponible y vuelve a conectar. Los recibidos pendientes se conservan.","",false)
@@ -247,6 +344,7 @@ class MainActivity : Activity() {
         crashHandler=Thread.UncaughtExceptionHandler { thread,error -> debugLog.failure("UNCAUGHT",error);oldCrashHandler?.uncaughtException(thread,error) }
         Thread.setDefaultUncaughtExceptionHandler(crashHandler)
         store=ChatStore(this);store.interrupted()
+        phoneContacts=PhoneContacts(this)
         settingsBody=column().apply { setPadding(dp(20),dp(4),dp(20),dp(16)) }
         number=EditText(this).apply { hint="Tu número internacional, sin +";inputType=InputType.TYPE_CLASS_PHONE;setSingleLine(true);isSaveEnabled=false }
         pair=Button(this).apply { text="Solicitar código de vinculación" }
@@ -256,16 +354,23 @@ class MainActivity : Activity() {
         listOf(number,pair,check,stop,code,output).forEach { settingsBody.addView(it) }
         val save=Button(this).apply { text="Guardar log";setOnClickListener { exportLog() } }
         val view=Button(this).apply { text="Ver log";setOnClickListener { AlertDialog.Builder(this@MainActivity).setTitle("Diagnóstico").setView(ScrollView(this@MainActivity).apply { addView(label(debugLog.snapshot(),12f).apply { setTextIsSelectable(true) }) }).setPositiveButton("Cerrar",null).show() } }
+        settingsBody.addView(Button(this).apply { text="Usar nombres de la agenda"; setOnClickListener { requestContactNames() } })
         settingsBody.addView(save);settingsBody.addView(view)
-        pair.setOnClickListener { val phone=number.text.toString().trim();if(!phone.matches(Regex("^[1-9][0-9]{7,14}$")))number.error="Usa el prefijo de país y entre 8 y 15 dígitos" else { reconnectPolicy.reset();start(phone) } }
-        check.setOnClickListener { reconnectPolicy.reset();start("") }
+        pair.setOnClickListener { val phone=number.text.toString().trim();if(!phone.matches(Regex("^[1-9][0-9]{7,14}$")))number.error="Usa el prefijo de país y entre 8 y 15 dígitos" else { automaticReconnect=true;reconnectPolicy.reset();start(phone) } }
+        check.setOnClickListener { automaticReconnect=true;reconnectPolicy.reset();start("") }
         stop.setOnClickListener {
+            automaticReconnect=false
             sessionGeneration++;reconnectPolicy.reset();connection?.cancel();connection=null
             connected=false;pendingMessage=null
             try { store.interrupted();render("Desconectado. Las claves se conservan.","",false);updateSend() }
             catch(error: Exception) { storageFailure(error) }
         }
         showList();render("Sin conexión · abre ⋮ para vincular", "",false)
+        networkWasAvailable=networkAvailable()
+        val filter=IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION)
+        if(Build.VERSION.SDK_INT>=33) registerReceiver(networkReceiver,filter,Context.RECEIVER_NOT_EXPORTED)
+        else registerReceiver(networkReceiver,filter)
+        networkReceiverRegistered=true
         if(File(filesDir,"identity.v1").exists())start("")
     }
     @Deprecated("Legacy navigation supports Android 5")
@@ -280,7 +385,7 @@ class MainActivity : Activity() {
         code.text = if (pairingCode.length == 8) "${pairingCode.take(4)}-${pairingCode.takeLast(4)}" else ""
         pair.isEnabled = !busy
         check.isEnabled = !busy
-        stop.isEnabled = busy
+        stop.isEnabled = busy || (automaticReconnect && File(filesDir,"identity.v1").exists())
         number.isEnabled = !busy
     }
 
@@ -306,6 +411,9 @@ class MainActivity : Activity() {
         private var lastState: Int? = null
         private var authenticated = false
         private var lastIncoming = SystemClock.elapsedRealtime()
+        fun resolve(jid: String): String? = synchronized(lock) {
+            if(finished || handle==0L) null else nativeResolve(handle,jid)
+        }
         fun stored(id: String, jid: String, outgoing: Boolean) = synchronized(lock) {
             if(!finished&&handle!=0L) {
                 val ok=nativeStored(handle,id,jid,outgoing)
@@ -430,6 +538,11 @@ class MainActivity : Activity() {
             if (!finished) finish("WhatsApp ha cerrado la conexión.",retryNetwork=authenticated||phone.isEmpty())
         }
 
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = synchronized(lock) {
+            log("WEBSOCKET_CLOSED close_code=$code")
+            if(!finished) finish("WhatsApp ha cerrado la conexión.",retryNetwork=authenticated||phone.isEmpty())
+        }
+
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = synchronized(lock) {
             if (finished) { log("WEBSOCKET_CLOSED_AFTER_ATTEMPT"); return@synchronized }
             log("WEBSOCKET_FAILURE http=${response?.code ?: "none"}")
@@ -458,10 +571,10 @@ class MainActivity : Activity() {
                         try { store.interrupted() } catch(error: Exception) { storageFailure(error);return@post }
                         render(status, "", false)
                         val delay=if(retryNetwork)reconnectPolicy.nextDelay(SystemClock.elapsedRealtime()) else null
-                        if(delay!=null) {
+                        if(delay!=null && automaticReconnect) {
                             val generation=sessionGeneration
                             log("RECONNECT_SCHEDULED delay_ms=$delay")
-                            handler.postDelayed({ if(connection==null&&!destroyed&&generation==sessionGeneration)start("") },delay)
+                            handler.postDelayed({ if(automaticReconnect&&connection==null&&!destroyed&&generation==sessionGeneration)start("") },delay)
                         }
                     }
                 }
@@ -513,6 +626,9 @@ class MainActivity : Activity() {
         debugLog.add("APP_DESTROY changing_configuration=$isChangingConfigurations")
         if (Thread.getDefaultUncaughtExceptionHandler() === crashHandler) Thread.setDefaultUncaughtExceptionHandler(oldCrashHandler)
         destroyed = true
+        contactGeneration++
+        if(networkReceiverRegistered) { unregisterReceiver(networkReceiver); networkReceiverRegistered=false }
+        contactWorker.shutdownNow()
         connection?.cancel()
         connection = null
         if(::store.isInitialized)store.close()

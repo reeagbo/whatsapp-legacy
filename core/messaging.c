@@ -45,8 +45,25 @@ static void be(uint32_t v,uint8_t *b,size_t n){for(size_t i=0;i<n;i++)b[n-i-1]=(
 static int number(const wa_node *n,size_t len,uint32_t *out){if(!n||!n->data||n->data_len!=len||len>4)return 0;uint32_t v=0;for(size_t i=0;i<len;i++)v=(v<<8)|n->data[i];*out=v;return 1;}
 static wa_node *keynode(wa_tree *t,wa_node *parent,const char *tag,uint32_t id,const uint8_t pk[32],const uint8_t *sig){uint8_t b[3];be(id,b,3);wa_node *n=wa_node_add(t,parent,tag);if(!n||!data(t,n,"id",b,3)||!data(t,n,"value",pk,32)||(sig&&!data(t,n,"signature",sig,64)))return NULL;return n;}
 static void mapkey(const char *jid,char key[80]){uint8_t h[32];SHA256((uint8_t*)jid,strlen(jid),h);memcpy(key,"mapping-",8);for(size_t i=0;i<32;i++)snprintf(key+8+i*2,3,"%02x",h[i]);}
-static int mapping(wa_messenger *m,const char *lid,const char *pn){char l[128],p[128],key[80];if(!base(lid,l)||!base(pn,p))return 0;mapkey(l,key);if(!m->io.put(m->io.user,key,(uint8_t*)p,strlen(p)))return 0;mapkey(p,key);return m->io.put(m->io.user,key,(uint8_t*)l,strlen(l));}
+static int mapping(wa_messenger *m,const char *lid,const char *pn){char l[128],p[128],key[80];if(!base(lid,l)||!base(pn,p)||!strstr(l,"@lid")||!strstr(p,"@s.whatsapp.net"))return 0;mapkey(l,key);
+ char previous[128];size_t length=0;int found=m->io.get(m->io.user,key,(uint8_t*)previous,127,&length);
+ if(found<0||length>127)return 0;
+ if(found==1){previous[length]=0;if(strcmp(previous,p))return 0;}
+ if(!m->io.put(m->io.user,key,(uint8_t*)p,strlen(p)))return 0;mapkey(p,key);return m->io.put(m->io.user,key,(uint8_t*)l,strlen(l));}
 static int mapped(wa_messenger *m,const char *jid,char out[128]){char b[128],key[80];if(!base(jid,b))return 0;mapkey(b,key);size_t n=0;int r=m->io.get(m->io.user,key,(uint8_t*)out,127,&n);if(r!=1||n>127)return 0;out[n]=0;char valid[128];return base(out,valid);}
+/* Application address only: never rename the Signal session/ratchet key. */
+int wa_messenger_resolve(wa_messenger *m,const char *jid,char out[128]) {
+ char b[128],pn[128];if(!m||!out||!base(jid,b))return 0;
+ if(strstr(b,"@lid")&&mapped(m,b,pn)&&strstr(pn,"@s.whatsapp.net"))return copy(out,128,pn);
+ return copy(out,128,b);
+}
+static int envelope_mapping(wa_messenger *m,const char *jid,const char *alternate) {
+ char a[128],b[128];
+ if(!alternate||!base(jid,a)||!base(alternate,b))return 1;
+ if(strstr(a,"@lid")&&strstr(b,"@s.whatsapp.net"))return mapping(m,a,b);
+ if(strstr(b,"@lid")&&strstr(a,"@s.whatsapp.net"))return mapping(m,b,a);
+ return 1; /* Same-domain/malformed metadata cannot establish an alias. */
+}
 static int activate(wa_messenger *m){m->boot=3;wa_tree *t=iq("set","legacy-active","passive");if(!t||!wa_node_add(t,t->root,"active")){wa_tree_free(t);return 0;}return send(m,t);}
 static int upload(wa_messenger *m){
  uint8_t b[4];size_t n=0;uint32_t start=1;int r=m->io.get(m->io.user,"next-prekey",b,4,&n);if(r<0||(r==1&&n!=4))return 0;if(r==1){start=0;for(size_t j=0;j<4;j++)start=(start<<8)|b[j];}
@@ -167,7 +184,7 @@ static int save_before_ratchet(void *user,const uint8_t *plain,size_t n) {
  if(own){
   /* Only our own authenticated account can supply an outgoing-device copy. */
   if(strcmp(c->from,c->m->own)&&(!c->m->lid[0]||strcmp(c->from,c->m->lid)))return 0;
-  if(!base(dest,peer))return 0;
+  if(!wa_messenger_resolve(c->m,dest,peer))return 0;
  }
  else if(!mapped(c->m,c->from,peer)||!strstr(peer,"@s.whatsapp.net"))copy(peer,sizeof peer,c->from);
  wa_message_event *e=&c->saved;memset(e,0,sizeof *e);
@@ -185,7 +202,14 @@ static int incoming(wa_messenger *m,const wa_node *node){
  const char *from=wa_node_get(node,"from"),*id=wa_node_get(node,"id");char frombase[128];
  if(!id||!base(from,frombase))return ack(m,node,"message");
  const char *sender=wa_node_get(node,"participant");if(!sender)sender=from;
- const char *alt=wa_node_get(node,"sender_pn");if(alt&&strstr(from,"@lid"))mapping(m,from,alt);
+ const char *alt=wa_node_get(node,strstr(frombase,"@lid")?"sender_pn":"sender_lid");
+ if(!alt)alt=wa_node_get(node,strstr(frombase,"@lid")?"peer_recipient_pn":"peer_recipient_lid");
+ int own_sender=!strcmp(frombase,m->own)||(m->lid[0]&&!strcmp(frombase,m->lid));
+ const char *recipient=wa_node_get(node,"recipient");
+ const char *recipient_alt=recipient?wa_node_get(node,strstr(recipient,"@lid")?"recipient_pn":"recipient_lid"):NULL;
+ if(!envelope_mapping(m,frombase,alt)||(own_sender&&!envelope_mapping(m,recipient,recipient_alt))) {
+  event(m,"notice",id,frombase,"No se pudo guardar o verificar la dirección del contacto.",WA_INBOX_STORAGE_ERROR);return -1;
+ }
  char crypto[128];copy(crypto,sizeof crypto,sender);
  if(strstr(sender,"@s.whatsapp.net")){char lid[128];if(mapped(m,sender,lid)&&strstr(lid,"@lid"))device(lid,crypto,device_id(sender));}
  int got=0;for(wa_node *e=node->child;e;e=e->next){const char *type=wa_node_get(e,"type");if(strcmp(e->tag,"enc")||!type||!e->data||(strcmp(type,"pkmsg")&&strcmp(type,"msg")))continue;
@@ -195,7 +219,7 @@ static int incoming(wa_messenger *m,const wa_node *node){
   size_t capacity=e->data_len;
   if(!capacity||capacity>WA_NODE_BYTES){event(m,"notice",id,frombase,"Paquete recibido demasiado grande.",-1);continue;}
   uint8_t *plaintext=malloc(capacity);
-  if(!plaintext){event(m,"notice",id,frombase,"Memoria insuficiente para procesar un mensaje recibido.",-12);continue;}
+  if(!plaintext){event(m,"notice",id,frombase,"Memoria insuficiente para procesar un mensaje recibido. No se confirmó su recepción.",-12);return -1;}
   incoming_commit commit={0};commit.m=m;commit.id=id;commit.from=frombase;
   size_t n=0;int r=wa_signal_decrypt_with_callback(m->signal,crypto,!strcmp(type,"pkmsg"),e->data,e->data_len,plaintext,capacity,&n,save_before_ratchet,&commit);
   if(r<0){
@@ -222,6 +246,14 @@ static int incoming(wa_messenger *m,const wa_node *node){
    event(m,saved->kind,saved->id,saved->jid,saved->text,saved->state);got=1;
   } else event(m,valid?"ignored-payload":"bad-padding",id,frombase,"",0);
   OPENSSL_cleanse(plaintext,capacity);free(plaintext);
+ }
+ /* Push names are display metadata, never a phone-number or identity proof.
+  * Learn them only after a supported, authenticated incoming text. */
+ const char *name=wa_node_get(node,"notify");
+ if(got&&strcmp(frombase,m->own)&&(!m->lid[0]||strcmp(frombase,m->lid))&&name) {
+  size_t length=strlen(name);char peer[128];
+  if(length&&length<=256&&utf8((const uint8_t*)name,length)&&wa_messenger_resolve(m,frombase,peer))
+   event(m,"contact","",peer,name,0);
  }
  /* Unsupported payloads are acknowledged without claiming decryption/delivery. */
  int ok=ack(m,node,"message");

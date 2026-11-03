@@ -29,6 +29,16 @@ int main(void){
  wa_storage a,b,p;assert(wa_storage_posix(&a,pa)&&wa_storage_posix(&b,pbdir)&&wa_storage_posix(&p,pp));wa_identity ai,bi,pi;assert(wa_identity_generate(&ai)&&wa_identity_generate(&bi)&&wa_identity_generate(&pi));
  strcpy(ai.jid,"34111111111:1@s.whatsapp.net");memcpy(ai.account,"synthetic-certificate",21);ai.account_len=21;
  capture c={0};wa_messenger *m=wa_messenger_create(&ai,&a,"11111111:1@lid",capture_node,&c);wa_signal *bob=wa_signal_create(&bi,&b),*primary=wa_signal_create(&pi,&p);assert(m&&bob&&primary);
+ /* Persistent, strict cross-domain mapping; unknown LIDs remain opaque. */
+ char resolved[128];
+ assert(wa_messenger_resolve(m,"11111111:1@lid",resolved)&&!strcmp(resolved,"34111111111@s.whatsapp.net"));
+ assert(wa_messenger_resolve(m,"99999999@lid",resolved)&&!strcmp(resolved,"99999999@lid"));
+ assert(!wa_messenger_resolve(m,"123@evil",resolved));
+ assert(!mapping(m,"11111111@lid","12345678@lid"));
+ assert(envelope_mapping(m,"34333333333:0@s.whatsapp.net","33333333:0@lid"));
+ assert(wa_messenger_resolve(m,"33333333@lid",resolved)&&!strcmp(resolved,"34333333333@s.whatsapp.net"));
+ assert(!envelope_mapping(m,"33333333@lid","34444444444@s.whatsapp.net"));
+ assert(wa_messenger_resolve(m,"33333333@lid",resolved)&&!strcmp(resolved,"34333333333@s.whatsapp.net"));
  wa_messenger_tick(m,100000);assert(wa_messenger_start(m));wa_tree *t=captured(&c);assert(!strcmp(wa_node_get(t->root,"id"),"legacy-prekeys-count"));wa_tree_free(t);
  t=iq("result","legacy-prekeys-count",NULL);wa_node *count=wa_node_add(t,t->root,"count");assert(count&&wa_node_attr(count,"value","0"));assert(wa_messenger_node(m,t->root));wa_tree_free(t);
  t=captured(&c);wa_node *list=wa_node_child(t->root,"list");assert(list);size_t prekeys=0;for(wa_node *v=list->child;v;v=v->next)prekeys++;assert(prekeys==32);wa_tree_free(t);
@@ -51,11 +61,15 @@ int main(void){
  wa_messenger_free(m);wa_signal_free(bob);m=wa_messenger_create(&ai,&a,"11111111:1@lid",capture_node,&c);bob=wa_signal_create(&bi,&b);assert(m&&bob);
  uint8_t encoded[128];size_t en=0;const uint8_t reply[]="Respuesta cifrada";assert(pb(1,reply,sizeof reply-1,encoded,sizeof encoded,&en));encoded[en++]=1;
  uint8_t ct[4096];size_t cn=0;int pk=0;assert(wa_signal_encrypt(bob,"11111111:1@lid",encoded,en,ct,sizeof ct,&cn,&pk)>=0&&!pk);
- t=wa_tree_create();wa_node *root=wa_node_add(t,NULL,"message");assert(wa_node_attr(root,"id","incoming-test")&&wa_node_attr(root,"from","22222222:0@lid"));wa_node *enc=data(t,root,"enc",ct,cn);assert(enc&&wa_node_attr(enc,"type","msg"));assert(wa_messenger_node(m,root));
- const wa_message_event *e=wa_messenger_event(m);assert(e&&!strcmp(e->kind,"message")&&!strcmp(e->text,(const char*)reply)&&!strcmp(e->jid,"34222222222@s.whatsapp.net"));wa_tree_free(t);clear_events(m);
+ t=wa_tree_create();wa_node *root=wa_node_add(t,NULL,"message");assert(wa_node_attr(root,"id","incoming-test")&&wa_node_attr(root,"from","22222222:0@lid")&&wa_node_attr(root,"notify","Ana sintética"));wa_node *enc=data(t,root,"enc",ct,cn);assert(enc&&wa_node_attr(enc,"type","msg"));assert(wa_messenger_node(m,root));
+ const wa_message_event *e=wa_messenger_event(m);assert(e&&!strcmp(e->kind,"message")&&!strcmp(e->text,(const char*)reply)&&!strcmp(e->jid,"34222222222@s.whatsapp.net"));
+ wa_messenger_event_done(m);e=wa_messenger_event(m);
+ assert(e&&!strcmp(e->kind,"contact")&&!strcmp(e->jid,"34222222222@s.whatsapp.net")&&!strcmp(e->text,"Ana sintética"));
+ wa_tree_free(t);clear_events(m);
  /* Process death after delivery to JNI but before SQLite commit must replay.
   * The inbox is released only by the application's explicit durable receipt. */
  wa_messenger_free(m);m=wa_messenger_create(&ai,&a,"11111111:1@lid",capture_node,&c);assert(m&&wa_messenger_start(m));
+ assert(wa_messenger_resolve(m,"33333333@lid",resolved)&&!strcmp(resolved,"34333333333@s.whatsapp.net"));
  e=wa_messenger_event(m);assert(e&&!strcmp(e->id,"incoming-test")&&!strcmp(e->text,(const char*)reply));clear_events(m);
  assert(wa_messenger_stored(m,"incoming-test","34222222222@s.whatsapp.net",0));
  wa_messenger_free(m);m=wa_messenger_create(&ai,&a,"11111111:1@lid",capture_node,&c);assert(m&&wa_messenger_start(m)&&!wa_messenger_event(m));
