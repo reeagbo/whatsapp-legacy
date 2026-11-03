@@ -21,7 +21,10 @@ def wait_for(predicate, timeout=25):
             if predicate(node.attrib):
                 return node
         time.sleep(.4)
-    raise AssertionError('Expected UI element did not appear')
+    (out/'failure.xml').write_bytes(ET.tostring(root))
+    screenshot('failure.png')
+    (out/'failure-logcat.txt').write_bytes(adb('logcat', '-d', '-s', 'AndroidRuntime:E'))
+    raise AssertionError('Expected UI element did not appear; captured UI and crash diagnostics')
 def text(value):
     return lambda a: a.get('text', '').casefold() == value.casefold()
 def tap(node):
@@ -36,14 +39,17 @@ wait_for(text('Nueva conversación'))
 root = tree()
 edits = [n for n in root.iter('node') if n.attrib.get('class') == 'android.widget.EditText']
 assert len(edits) == 2
+def edit(index):
+    return [n for n in tree().iter('node') if n.attrib.get('class') == 'android.widget.EditText'][index]
+# Always recapture bounds after keyboard/dialog resize.
 # Invalid number must not dismiss the dialog.
-tap(edits[0]); adb('shell', 'input', 'text', '123')
+tap(edit(0)); adb('shell', 'input', 'text', '123')
 tap(wait_for(text('Abrir')))
 wait_for(text('Nueva conversación'))
-tap(edits[0]); adb('shell', 'input', 'keyevent', 'KEYCODE_MOVE_END')
+tap(edit(0)); adb('shell', 'input', 'keyevent', 'KEYCODE_MOVE_END')
 for _ in range(3): adb('shell', 'input', 'keyevent', 'KEYCODE_DEL')
 adb('shell', 'input', 'text', '34123456789')
-tap(edits[1]); adb('shell', 'input', 'text', 'Prueba%sUI')
+tap(edit(1)); adb('shell', 'input', 'text', 'Prueba%sUI')
 tap(wait_for(text('Abrir')))
 wait_for(text('Prueba UI'))
 wait_for(lambda a: a.get('content-desc') == 'Enviar mensaje' and a.get('enabled') == 'false')
