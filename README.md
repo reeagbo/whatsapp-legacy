@@ -6,6 +6,38 @@ claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
 OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
 y de nombre del servidor, sin excepciones de confianza.
 
+## Versión 0.11-debug: reconexión e historial experimental
+
+Incluye **Pendiente** sin identificadores visibles y reintentos de red espaciados.
+En **⋮** aparecen **Recuperar conversaciones**, **Recuperar mensajes anteriores de
+este chat** y **Reintentar importación pendiente**. La petición completa se cifra
+para el dispositivo principal; el servidor o el móvil pueden rechazarla (incluida
+la restricción de historial completo para algunos tipos de cuenta). Se muestra
+el rechazo; una solicitud aceptada no se anuncia como importación completada.
+La consulta por chat pide hasta 100 textos anteriores a su mensaje más antiguo.
+
+La importación consume notificaciones autenticadas del propio dispositivo,
+verifica SHA-256, HMAC e integridad AES-CBC antes de descomprimir, y procesa
+conversaciones individuales, nombres, correspondencias LID/número y textos.
+Grupos, multimedia y mensajes especiales aún no se importan. Conserva fechas
+originales y confirmaciones, y usa la misma clave de duplicados que el directo.
+Cada bloque se guarda en una transacción SQLite; la notificación durable solo
+se elimina tras el commit. Los pendientes se retoman al conectar o manualmente.
+Los límites son ocho notificaciones pendientes, 8 MiB descargados por bloque y
+32 MiB descomprimidos para acotar memoria en móviles antiguos. Los errores se
+registran sin URLs, claves, nombres, cuerpos ni identificadores completos.
+
+Las pruebas incluyen una muestra cifrada generada con Python cryptography,
+rechazo de alteraciones aun recalculando el hash exterior, fechas/estados,
+Unicode, nombres, alias, persistencia del trabajo y la solicitud cifrada al
+principal simulado. La recuperación contra una cuenta real queda pendiente de
+la prueba en móvil. No se garantiza que WhatsApp vuelva a entregar paquetes que
+las versiones anteriores ya descartaron, ni que autorice todo el historial.
+
+Referencias de formato: [HistorySync y mensajes de protocolo](https://github.com/WhiskeySockets/Baileys/blob/master/WAProto/WAProto.proto),
+[procesamiento de historial](https://github.com/WhiskeySockets/Baileys/blob/master/src/Utils/history.ts),
+[solicitudes al principal](https://github.com/WhiskeySockets/Baileys/blob/master/src/Socket/messages-recv.ts).
+
 ## Cambios después de 0.10 (sin nueva compilación)
 
 Los chats cuyo número se desconoce muestran **Pendiente**, sin dígitos del LID.
@@ -166,7 +198,7 @@ considerar que Android borrará sus claves privadas.
 Solo por petición expresa del usuario se inicia manualmente
 `.github/workflows/android.yml` mediante `workflow_dispatch`: pruebas C99, sonda online sin
 número de teléfono (diagnóstica, no bloqueante), compilación y Android Lint.
-Descarga el artefacto con versión `whatsapp-legacy-0.10-debug` de la ejecución correcta.
+Descarga el artefacto con versión `whatsapp-legacy-0.11-debug` de la ejecución correcta.
 
 Para pruebas locales: `bash core/build.sh`. Requiere CMake, compilador C99,
 OpenSSL y zlib de desarrollo. Para la sonda online sin cuenta: `core/wa_probe`.

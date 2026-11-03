@@ -12,6 +12,9 @@ wa_pair_session *wa_pair_create(const char *credentials_path,
 int wa_pair_send_text(wa_pair_session *,const char *jid,const char *id,const uint8_t *utf8,size_t);
 int wa_pair_stored(wa_pair_session *,const char *id,const char *jid,int outgoing);
 int wa_pair_resolve(wa_pair_session *,const char *jid,char out[128]);
+int wa_pair_history(wa_pair_session *,const char *,const char *,int,uint64_t,const char *);
+int wa_pair_history_task(wa_pair_session *,unsigned,uint8_t *,size_t,size_t *);
+int wa_pair_history_done(wa_pair_session *,unsigned,const uint8_t *,size_t);
 void wa_pair_tick(wa_pair_session *,uint64_t monotonic_ms);
 const wa_message_event *wa_pair_event(const wa_pair_session *);
 void wa_pair_event_done(wa_pair_session *);

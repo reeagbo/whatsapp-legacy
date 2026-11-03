@@ -49,6 +49,13 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
+    private external fun nativeHistoryRequest(handle: Long, jid: String, anchor: String, own: Boolean, time: Long, id: String): Boolean
+    private external fun nativeHistoryTask(handle: Long, slot: Int): ByteArray?
+    private external fun nativeHistoryDone(handle: Long, slot: Int, task: ByteArray): Boolean
+    private external fun nativeHistoryPath(task: ByteArray): String?
+    private external fun nativeHistoryOpen(task: ByteArray, encrypted: ByteArray): Long
+    private external fun nativeHistoryNext(handle: Long): Array<String>?
+    private external fun nativeHistoryClose(handle: Long)
     private external fun nativeResolve(handle: Long, jid: String): String?
     private external fun nativeStored(handle: Long, id: String, jid: String, outgoing: Boolean): Boolean
     private external fun nativeEvent(handle: Long): Array<String>?
@@ -127,6 +134,12 @@ class MainActivity : Activity() {
     private var chatTitle: TextView? = null
     private var addressLabel: TextView? = null
     private val contactRequest = 302
+    private val historyWorker=Executors.newSingleThreadExecutor()
+    private val historyHttp=OkHttpClient.Builder().connectTimeout(20,TimeUnit.SECONDS).readTimeout(60,TimeUnit.SECONDS).followRedirects(false).build()
+    private var historyBusy=false
+    private var historyRequestId: String? = null
+    private var historyRequestPeer: String? = null
+    private var lastHistoryAttempt=0L
     @Suppress("DEPRECATION")
     private fun networkAvailable() = (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).activeNetworkInfo?.isConnected == true
     @Suppress("DEPRECATION")
@@ -269,7 +282,7 @@ class MainActivity : Activity() {
                 addView(label(name,18f).apply { setTypeface(null,Typeface.BOLD); setSingleLine(true) })
                 addView(label(chat.preview.ifBlank { "Conversación nueva" },14f,muted).apply { setSingleLine(true); ellipsize=android.text.TextUtils.TruncateAt.END; setPadding(0,dp(5),0,0) })
             },LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1f))
-            row.addView(label(SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(chat.time)),12f,muted))
+            row.addView(label(if(chat.time>0) SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(chat.time)) else "",12f,muted))
             row.setOnClickListener { showChat(chat.jid) }; row.setOnLongClickListener { editName(chat.jid); true }; rows.addView(row)
             rows.addView(View(this).apply { setBackgroundColor(palette(R.color.wa_divider)) },LinearLayout.LayoutParams(-1,dp(1)))
         }
@@ -345,7 +358,10 @@ class MainActivity : Activity() {
             if(e.size!=5)continue;val state=e[4].toIntOrNull()?:0
             when(e[0]) {
                 "ready" -> { connected=true;statusText="Conectado · texto cifrado";reconnectPolicy.connected(SystemClock.elapsedRealtime()) }
-                "status" -> { val matched=store.status(e[1],state,e[3],e[2]);if(matched&&e[1]==pendingMessage&&(state<0||state>=2))pendingMessage=null }
+                "status" -> if(e[1]==historyRequestId) {
+                    if(state<0) { statusText="No se confirmó la solicitud de historial: ${e[3]}";historyRequestId=null }
+                    else if(state>=2) statusText="Solicitud de historial aceptada; esperando al móvil principal"
+                } else { val matched=store.status(e[1],state,e[3],e[2]);if(matched&&e[1]==pendingMessage&&(state<0||state>=2))pendingMessage=null }
                 "message", "sent-copy" -> if(e[1].isNotBlank()&&e[2].isNotBlank()) {
                     debugLog.hide(e[2].substringBefore('@'))
                     debugLog.add("MESSAGE_TARGET kind=${e[0]} event=${DebugLog.addressHint(e[2])} stored=${DebugLog.addressHint(store.resolve(e[2]))}")
@@ -353,6 +369,7 @@ class MainActivity : Activity() {
                     // The native inbox keeps the text until this SQLite commit succeeds.
                     connection?.stored(e[1],e[2],e[0]=="sent-copy")
                 }
+                "history", "history-status" -> { statusText=e[3];if(state<0) { historyRequestId=null;Toast.makeText(this,e[3],Toast.LENGTH_LONG).show() } }
                 "contact" -> if(e[2].isNotBlank()) store.learnName(e[2],e[3])
                 "notice" -> { statusText=e[3];if(state<0)Toast.makeText(this,e[3],Toast.LENGTH_LONG).show() }
             }
@@ -360,8 +377,96 @@ class MainActivity : Activity() {
         statusLabel.text=statusText
         refreshConversation()
         scheduleContacts()
+        scheduleHistory()
         updateSend()
         } catch (error: Exception) { storageFailure(error) }
+    }
+    private fun requestHistory(full: Boolean) {
+        val active=connection
+        if(!connected || active==null) { Toast.makeText(this,"Conecta la sesión primero",Toast.LENGTH_SHORT).show();return }
+        if(historyBusy || historyRequestId!=null) { Toast.makeText(this,"Ya hay una recuperación en curso",Toast.LENGTH_SHORT).show();return }
+        val jid=if(full) "" else conversation ?: run { Toast.makeText(this,"Abre la conversación que quieres recuperar",Toast.LENGTH_SHORT).show();return }
+        val anchor=if(full) null else store.historyAnchor(jid)
+        if(!full && anchor==null) { Toast.makeText(this,"Hace falta un mensaje como punto de partida",Toast.LENGTH_SHORT).show();return }
+        val id="3EB0"+UUID.randomUUID().toString().replace("-","").uppercase(Locale.ROOT)
+        historyRequestId=id;historyRequestPeer=if(full)null else jid
+        if(!active.requestHistory(jid,anchor,id)) { historyRequestId=null;Toast.makeText(this,"No se pudo iniciar la solicitud; espera a terminar el envío actual",Toast.LENGTH_LONG).show();return }
+        debugLog.add("HISTORY_REQUEST scope=${if(full) "conversations" else "older-messages"}")
+        statusText="Historial solicitado al móvil principal";statusLabel.text=statusText
+        handler.postDelayed({ if(historyRequestId==id && !destroyed) {
+            historyRequestId=null;statusText="El móvil principal aún no ha enviado historial. Puedes volver a solicitarlo."
+            statusLabel.text=statusText;debugLog.add("HISTORY_REQUEST_WAIT_EXPIRED")
+        } },120_000L)
+    }
+    private fun scheduleHistory(force: Boolean = false) {
+        if(historyBusy || destroyed)return
+        val active=connection ?: return
+        val now=SystemClock.elapsedRealtime()
+        if(!force && lastHistoryAttempt!=0L && now-lastHistoryAttempt<60_000L)return
+        val tasks=active.historyTasks()
+        if(tasks.isEmpty())return
+        historyBusy=true;lastHistoryAttempt=now
+        historyWorker.execute {
+            var messages=0;var chats=0;var succeeded=0;var errorType: String?=null
+            val db=ChatStore(applicationContext)
+            try {
+                for((slot,task) in tasks) {
+                    if(Thread.currentThread().isInterrupted)break
+                    var handle=0L
+                    try {
+                        val path=nativeHistoryPath(task) ?: throw java.io.IOException("Invalid history path")
+                        val encrypted=if(path.isEmpty()) ByteArray(0) else {
+                            // A fixed host and no redirects keep media requests separate from account traffic.
+                            val request=Request.Builder().url("https://mmg.whatsapp.net$path").header("Origin","https://web.whatsapp.com").build()
+                            historyHttp.newCall(request).execute().use { response ->
+                                if(!response.isSuccessful)throw java.io.IOException("History download unavailable")
+                                val body=response.body ?: throw java.io.IOException("Empty history download")
+                                if(body.contentLength()>8L*1024*1024)throw java.io.IOException("History chunk too large")
+                                body.byteStream().use { input ->
+                                    val output=java.io.ByteArrayOutputStream();val buffer=ByteArray(16384)
+                                    while(true) { val n=input.read(buffer);if(n<0)break;if(output.size()+n>8*1024*1024)throw java.io.IOException("History chunk too large");output.write(buffer,0,n) }
+                                    output.toByteArray()
+                                }
+                            }
+                        }
+                        handle=nativeHistoryOpen(task,encrypted)
+                        if(handle==0L)throw java.io.IOException("History integrity or format check failed")
+                        var importedMessages=0;var importedChats=0
+                        db.historyTransaction {
+                            while(true) {
+                                if(Thread.currentThread().isInterrupted)throw java.io.InterruptedIOException()
+                                val e=nativeHistoryNext(handle) ?: break
+                                val time=e[5].toLong()
+                                when(e[0]) {
+                                    "alias" -> if(!db.link(e[1],e[2]))throw java.io.IOException("Conflicting history address")
+                                    "chat" -> { db.historyChat(e[2],e[3],time);importedChats++ }
+                                    "name" -> db.learnName(e[2],e[3])
+                                    "message", "sent-copy" -> { db.append(e[1],e[2],e[3],e[0]=="sent-copy",e[4].toInt(),time,true);importedMessages++ }
+                                }
+                            }
+                        }
+                        // Only a committed complete chunk may remove its durable task.
+                        val confirmed=active.historyDone(slot,task)
+                        debugLog.add("HISTORY_CHUNK_COMMITTED chats=$importedChats messages=$importedMessages task_confirmed=$confirmed")
+                        messages+=importedMessages;chats+=importedChats;succeeded++
+                        if(!confirmed)throw java.io.IOException("History task acknowledgement unavailable")
+                    } catch(error: Exception) { errorType=error.javaClass.simpleName;debugLog.add("HISTORY_CHUNK_FAILED type=$errorType retained=true") }
+                    finally { if(handle!=0L)nativeHistoryClose(handle) }
+                }
+            } catch(error: Exception) { errorType=error.javaClass.simpleName;debugLog.add("HISTORY_IMPORT_FAILED type=$errorType retained=true") }
+            finally { db.close() }
+            handler.post {
+                if(!destroyed) {
+                    historyBusy=false
+                    if(succeeded>0)historyRequestId=null
+                    statusText=if(errorType!=null) "Historial pendiente: no se pudo completar la importación; se conserva para reintentar" else "Historial importado: $chats conversaciones y $messages textos procesados"
+                    refreshConversation();statusLabel.text=statusText;scheduleContacts(true)
+                    // Process later notifications, but do not loop on a failed chunk.
+                    if(errorType==null) { lastHistoryAttempt=0L;scheduleHistory() }
+                    else handler.postDelayed({ if(!destroyed)scheduleHistory(true) },120_000L)
+                }
+            }
+        }
     }
     private fun storageFailure(error: Exception) {
         debugLog.failure("MESSAGE_STORAGE_FAILED",error)
@@ -399,6 +504,9 @@ class MainActivity : Activity() {
         val save=Button(this).apply { text="Guardar log";setOnClickListener { exportLog() } }
         val view=Button(this).apply { text="Ver log";setOnClickListener { AlertDialog.Builder(this@MainActivity).setTitle("Diagnóstico").setView(ScrollView(this@MainActivity).apply { addView(label(debugLog.snapshot(),12f).apply { setTextIsSelectable(true) }) }).setPositiveButton("Cerrar",null).show() } }
         settingsBody.addView(Button(this).apply { text="Permisos de agenda"; setOnClickListener { openAgendaSettings() } })
+        settingsBody.addView(Button(this).apply { text="Recuperar conversaciones";setOnClickListener { requestHistory(true) } })
+        settingsBody.addView(Button(this).apply { text="Recuperar mensajes anteriores de este chat";setOnClickListener { requestHistory(false) } })
+        settingsBody.addView(Button(this).apply { text="Reintentar importación pendiente";setOnClickListener { scheduleHistory(true) } })
         settingsBody.addView(save);settingsBody.addView(view)
         pair.setOnClickListener { val phone=number.text.toString().trim();if(!phone.matches(Regex("^[1-9][0-9]{7,14}$")))number.error="Usa el prefijo de país y entre 8 y 15 dígitos" else { automaticReconnect=true;reconnectPolicy.reset();start(phone) } }
         check.setOnClickListener { automaticReconnect=true;reconnectPolicy.reset();start("") }
@@ -457,6 +565,17 @@ class MainActivity : Activity() {
         private var lastState: Int? = null
         private var authenticated = false
         private var lastIncoming = SystemClock.elapsedRealtime()
+        fun requestHistory(jid: String, anchor: ChatStore.Message?, id: String): Boolean = synchronized(lock) {
+            if(finished || handle==0L)return@synchronized false
+            val ok=nativeHistoryRequest(handle,jid,anchor?.id.orEmpty(),anchor?.outgoing ?: false,anchor?.time ?: 0L,id)
+            ws?.let { flush(it) };publish();ok
+        }
+        fun historyTasks(): List<Pair<Int,ByteArray>> = synchronized(lock) {
+            if(finished || handle==0L) emptyList() else (0 until 8).mapNotNull { slot -> nativeHistoryTask(handle,slot)?.let { slot to it } }
+        }
+        fun historyDone(slot: Int, task: ByteArray): Boolean = synchronized(lock) {
+            !finished && handle!=0L && nativeHistoryDone(handle,slot,task)
+        }
         fun resolve(jid: String): String? = synchronized(lock) {
             if(finished || handle==0L) null else nativeResolve(handle,jid)
         }
@@ -613,7 +732,7 @@ class MainActivity : Activity() {
                     } else {
                         connection = null
                         connected=false
-                        pendingMessage=null
+                        pendingMessage=null;historyRequestId=null
                         try { store.interrupted() } catch(error: Exception) { storageFailure(error);return@post }
                         render(status, "", false)
                         val delay=if(retryNetwork)reconnectPolicy.nextDelay(SystemClock.elapsedRealtime()) else null
@@ -677,6 +796,8 @@ class MainActivity : Activity() {
         contactGeneration++
         if(networkReceiverRegistered) { unregisterReceiver(networkReceiver); networkReceiverRegistered=false }
         contactWorker.shutdownNow()
+        historyWorker.shutdownNow();historyHttp.dispatcher.cancelAll()
+        historyHttp.dispatcher.executorService.shutdown();historyHttp.connectionPool.evictAll()
         connection?.cancel()
         connection = null
         if(::store.isInitialized)store.close()

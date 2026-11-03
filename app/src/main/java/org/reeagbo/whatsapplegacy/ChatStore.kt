@@ -38,11 +38,11 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         }
         if (oldVersion < 3) createContacts(db)
     }
-    fun addChat(address: String, name: String = "") {
+    fun addChat(address: String, name: String = "", updated: Long = System.currentTimeMillis()) {
         val jid = resolve(address)
         // execSQL propagates storage failures instead of returning the same -1 as a duplicate.
         writableDatabase.execSQL("INSERT OR IGNORE INTO chats(jid,name,updated) VALUES(?,?,?)",
-            arrayOf(jid, name, System.currentTimeMillis()))
+            arrayOf(jid, name, updated))
         if (name.isNotBlank()) writableDatabase.update("chats", ContentValues().apply { put("name", name) }, "jid=?", arrayOf(jid))
     }
     fun setName(jid: String, name: String) {
@@ -54,13 +54,12 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
     fun messages(jid: String): List<Message> = readableDatabase.rawQuery(
         "SELECT id,peer,text,outgoing,status,time,note FROM messages WHERE peer=? ORDER BY time DESC,rowid DESC LIMIT 200", arrayOf(resolve(jid))
     ).use { c -> buildList { while (c.moveToNext()) add(Message(c.getString(0),c.getString(1),c.getString(2),c.getInt(3)!=0,c.getInt(4),c.getLong(5),c.getString(6))) }.reversed() }
-    fun append(id: String, address: String, text: String, outgoing: Boolean, status: Int) {
+    fun append(id: String, address: String, text: String, outgoing: Boolean, status: Int, time: Long = System.currentTimeMillis(), historical: Boolean = false) {
         val jid = resolve(address)
         val db = writableDatabase
         db.beginTransaction()
         try {
-            addChat(jid)
-            val time = System.currentTimeMillis()
+            addChat(jid,updated=time)
             var exists = false
             db.rawQuery("SELECT text FROM messages WHERE peer=? AND id=? AND outgoing=?",
                 arrayOf(jid, id, if (outgoing) "1" else "0")).use { c ->
@@ -74,13 +73,26 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
                     put("id", id); put("peer", jid); put("text", text); put("outgoing", if(outgoing) 1 else 0)
                     put("status", status); put("time", time); put("note", "")
                 })
-                db.update("chats", ContentValues().apply { put("updated", time) }, "jid=?", arrayOf(jid))
+                db.execSQL("UPDATE chats SET updated=MAX(updated,?) WHERE jid=?",arrayOf(time,jid))
             } else if (outgoing && status >= 2) {
                 db.execSQL("UPDATE messages SET status=MAX(status,?),note='' WHERE peer=? AND id=? AND outgoing=1", arrayOf(status,jid,id))
             }
+            if(exists && historical) db.execSQL("UPDATE messages SET time=MIN(time,?) WHERE peer=? AND id=? AND outgoing=?",arrayOf(time,jid,id,if(outgoing)1 else 0))
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
+    fun historyTransaction(block: () -> Unit) {
+        val db=writableDatabase
+        db.beginTransaction()
+        try { block();db.setTransactionSuccessful() } finally { db.endTransaction() }
+    }
+    fun historyChat(jid: String, name: String, time: Long) {
+        addChat(jid,updated=time)
+        if(name.isNotBlank())learnName(jid,name)
+    }
+    fun historyAnchor(jid: String): Message? = readableDatabase.rawQuery(
+        "SELECT id,peer,text,outgoing,status,time,note FROM messages WHERE peer=? ORDER BY time ASC,rowid ASC LIMIT 1",arrayOf(resolve(jid))
+    ).use { c -> if(c.moveToFirst()) Message(c.getString(0),c.getString(1),c.getString(2),c.getInt(3)!=0,c.getInt(4),c.getLong(5),c.getString(6)) else null }
     fun status(id: String, next: Int, note: String, peer: String = ""): Boolean {
         val db = writableDatabase
         var matched = false

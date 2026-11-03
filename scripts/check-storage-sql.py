@@ -99,5 +99,10 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     # Replaying an inbox event under its old LID resolves to the canonical dedup key.
     resolve=re.search(r'"(SELECT pn FROM aliases[^"]+)"',source).group(1)
     assert db.execute(resolve,(lid,)).fetchone()[0]==pn
+    # Re-imported history retains its earliest timestamp and delivery state.
+    historic=re.search(r'"(UPDATE messages SET time=MIN\(time,[^"]+)"',source).group(1)
+    db.execute(historic,(25,pn,'same',1));db.commit();db.close()
+    db=sqlite3.connect(path)
+    assert db.execute('SELECT text,status,time FROM messages WHERE peer=? AND id=? AND outgoing=1',(pn,'same')).fetchone()==('First committed content',4,25)
     db.close()
 print('PASS: v1/v2 upgrades to v3, rollback, reopen, Unicode, peer/direction dedup, receipt attribution, atomic LID/PN merges, names and delivery preservation. No compilation performed.')

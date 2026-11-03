@@ -1,6 +1,7 @@
 #include "messaging.h"
 #include "signal_engine.h"
 #include "inbox.h"
+#include "history.h"
 #include "wire.h"
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -13,6 +14,7 @@
 struct wa_messenger {
  wa_identity me;wa_storage io;wa_signal *signal;wa_inbox *inbox;int inbox_replayed;wa_send_node send;void *user;
  char own[128],lid[128];
+ int history_mode;
  int ready,boot,pending,phase;uint64_t now,deadline;
  char peer[128],route[128],id[96],query[128];uint8_t text[WA_TEXT_MAX+1];size_t text_len;
  struct {char jid[128];int own;} devices[DEVICES];size_t count;
@@ -80,6 +82,7 @@ static int upload(wa_messenger *m){
 wa_messenger *wa_messenger_create(const wa_identity *id,const wa_storage *io,const char *lid,wa_send_node sender,void *u){
  if(!id||!io||!sender||!id->jid[0])return NULL;wa_messenger *m=calloc(1,sizeof *m);if(!m)return NULL;m->me=*id;m->io=*io;m->send=sender;m->user=u;
  if(!base(id->jid,m->own)||(lid&&*lid&&!base(lid,m->lid))||!(m->inbox=wa_inbox_open(io))||!(m->signal=wa_signal_create(id,io))){wa_messenger_free(m);return NULL;}
+ if(!m->lid[0]){char known[128];if(mapped(m,m->own,known)&&strstr(known,"@lid"))copy(m->lid,sizeof m->lid,known);}
  if(m->lid[0]&&!mapping(m,m->lid,m->own)){wa_messenger_free(m);return NULL;}return m;
 }
 void wa_messenger_free(wa_messenger *m){if(!m)return;wa_signal_free(m->signal);wa_inbox_free(m->inbox);OPENSSL_cleanse(m,sizeof *m);free(m);}
@@ -103,7 +106,7 @@ static int discover(wa_messenger *m){
 int wa_messenger_send(wa_messenger *m,const char *jid,const char *id,const uint8_t *text,size_t n){
  if(!m||!m->ready||m->pending||!text||!n||n>WA_TEXT_MAX||!utf8(text,n)||!id||strlen(id)<8||strlen(id)>80||strspn(id,"0123456789ABCDEF")!=strlen(id))return 0;
  if(!base(jid,m->peer)||!copy(m->id,sizeof m->id,id))return 0;
- memcpy(m->text,text,n);m->text[n]=0;m->text_len=n;m->count=0;m->pending=1;copy(m->route,sizeof m->route,m->peer);
+ m->history_mode=0;memcpy(m->text,text,n);m->text[n]=0;m->text_len=n;m->count=0;m->pending=1;copy(m->route,sizeof m->route,m->peer);
  event(m,"status",id,m->peer,"Buscando dispositivos…",0);if(!discover(m))return error(m,"No se pudo consultar al destinatario.");return 1;
 }
 static int prepare_devices(wa_messenger *m,const wa_node *root){
@@ -120,6 +123,7 @@ static int prepare_devices(wa_messenger *m,const wa_node *root){
    const char *di=wa_node_get(d,"id"),*ki=wa_node_get(d,"key-index"),*host=wa_node_get(d,"is_hosted");if(strcmp(d->tag,"device")||!di||!*di||strspn(di,"0123456789")!=strlen(di))continue;
    unsigned long number=strtoul(di,NULL,10);if(number>255||(number&&!ki))continue;
    if(host&&!strcmp(host,"true"))return error(m,"Un dispositivo hosted todavía no está soportado.");
+   if(m->history_mode&&(!isown||number!=0))continue;
    if(isown&&number==device_id(m->me.jid))continue;
    if(m->count==DEVICES)return error(m,"Demasiados dispositivos para esta versión.");
    if(!device(canonical,m->devices[m->count].jid,(unsigned)number))return error(m,"Dirección de dispositivo no válida.");
@@ -145,16 +149,42 @@ static int bundles(wa_messenger *m,const wa_node *root){
  return 1;
 }
 static int pb(unsigned field,const uint8_t *p,size_t n,uint8_t *out,size_t cap,size_t *used){size_t z=0;if(*used>cap||!wa_pb_write_bytes(field,p,n,out+*used,cap-*used,&z))return 0;*used+=z;return 1;}
+static int pbnum(unsigned field,uint64_t value,uint8_t *out,size_t cap,size_t *used) {
+ uint8_t encoded[20];size_t n=0;uint64_t key=(uint64_t)field<<3;
+ do {uint8_t c=key&127;key>>=7;encoded[n++]=c|(key?128:0);}while(key);
+ do {uint8_t c=value&127;value>>=7;encoded[n++]=c|(value?128:0);}while(value);
+ if(n>cap-*used)return 0;memcpy(out+*used,encoded,n);*used+=n;return 1;
+}
+int wa_messenger_history(wa_messenger *m,const char *jid,const char *anchor,int from_me,uint64_t timestamp,const char *id) {
+ if(!m||!m->ready||m->pending||!id||strlen(id)<8||strlen(id)>80||strspn(id,"0123456789ABCDEF")!=strlen(id))return 0;
+ uint8_t request[1024],pdo[1200],protocol[1400];size_t rn=0,pn=0,n=0;
+ int full=!jid||!*jid;char peer[128];
+ if(!full&&(!base(jid,peer)||!anchor||!*anchor||strlen(anchor)>95||!timestamp||timestamp>253402300799000ULL))return 0;
+ int ok;
+ if(full){ /* Primary may decline full sync; it remains a request, not a completion. */
+  uint8_t metadata[128],config[128];size_t mn=0,cn=0;
+  ok=pb(1,(const uint8_t*)id,strlen(id),metadata,sizeof metadata,&mn)&&pbnum(1,365,config,sizeof config,&cn)&&pbnum(2,8,config,sizeof config,&cn)&&pbnum(3,32,config,sizeof config,&cn)&&pbnum(4,1,config,sizeof config,&cn)&&pbnum(16,1,config,sizeof config,&cn)&&pbnum(18,1,config,sizeof config,&cn)&&pb(1,metadata,mn,request,sizeof request,&rn)&&pb(2,config,cn,request,sizeof request,&rn)&&pbnum(1,6,pdo,sizeof pdo,&pn)&&pb(6,request,rn,pdo,sizeof pdo,&pn);
+ }else{
+  ok=pb(1,(const uint8_t*)peer,strlen(peer),request,sizeof request,&rn)&&pb(2,(const uint8_t*)anchor,strlen(anchor),request,sizeof request,&rn)&&pbnum(3,from_me!=0,request,sizeof request,&rn)&&pbnum(4,100,request,sizeof request,&rn)&&pbnum(5,timestamp,request,sizeof request,&rn)&&pbnum(1,3,pdo,sizeof pdo,&pn)&&pb(4,request,rn,pdo,sizeof pdo,&pn);
+ }
+ ok=ok&&pbnum(2,16,protocol,sizeof protocol,&n)&&pb(16,pdo,pn,protocol,sizeof protocol,&n);size_t total=0;
+ if(!ok||!pb(12,protocol,n,m->text,sizeof m->text,&total))return 0;
+ m->text_len=total;m->history_mode=1;m->pending=1;m->count=0;copy(m->peer,sizeof m->peer,m->own);copy(m->route,sizeof m->route,m->own);copy(m->id,sizeof m->id,id);
+ event(m,"history-status",id,"","Solicitando historial al móvil principal…",0);
+ if(!discover(m))return error(m,"No se pudo solicitar historial.");return 1;
+}
 static int transmit(wa_messenger *m){
  uint8_t plain[WA_TEXT_MAX+64],sync[WA_TEXT_MAX+512],outer[WA_TEXT_MAX+600];size_t n=0,sn=0,on=0;
- if(!pb(1,m->text,m->text_len,plain,sizeof plain,&n)||!pb(1,(uint8_t*)m->peer,strlen(m->peer),sync,sizeof sync,&sn)||!pb(2,plain,n,sync,sizeof sync,&sn)||!pb(31,sync,sn,outer,sizeof outer,&on))return error(m,"Texto demasiado largo.");
- wa_tree *t=wa_tree_create();if(!t)return error(m,"Memoria insuficiente.");wa_node *root=wa_node_add(t,NULL,"message");int ok=root&&wa_node_attr(root,"id",m->id)&&wa_node_attr(root,"to",m->route)&&wa_node_attr(root,"type","text");wa_node *participants=wa_node_add(t,root,"participants");ok=ok&&participants;int needs_identity=0;
+ if(m->history_mode){memcpy(plain,m->text,m->text_len);n=m->text_len;}
+ else if(!pb(1,m->text,m->text_len,plain,sizeof plain,&n)||!pb(1,(uint8_t*)m->peer,strlen(m->peer),sync,sizeof sync,&sn)||!pb(2,plain,n,sync,sizeof sync,&sn)||!pb(31,sync,sn,outer,sizeof outer,&on))return error(m,"Texto demasiado largo.");
+ wa_tree *t=wa_tree_create();if(!t)return error(m,"Memoria insuficiente.");wa_node *root=wa_node_add(t,NULL,"message");int ok=root&&wa_node_attr(root,"id",m->id)&&wa_node_attr(root,"to",m->history_mode?m->own:m->route)&&wa_node_attr(root,"type","text");wa_node *participants=m->history_mode?root:wa_node_add(t,root,"participants");ok=ok&&participants;int needs_identity=0;
+ if(m->history_mode){wa_node *meta=wa_node_add(t,root,"meta");ok=ok&&wa_node_attr(root,"category","peer")&&wa_node_attr(root,"push_priority","high_force")&&meta&&wa_node_attr(meta,"appdata","default");}
  for(size_t i=0;i<m->count&&ok;i++){
-  uint8_t input[WA_TEXT_MAX+640],ct[WA_TEXT_MAX+2048],random;size_t size=m->devices[i].own?on:n,cn=0;memcpy(input,m->devices[i].own?outer:plain,size);
+  uint8_t input[WA_TEXT_MAX+640],ct[WA_TEXT_MAX+2048],random;size_t size=!m->history_mode&&m->devices[i].own?on:n,cn=0;memcpy(input,!m->history_mode&&m->devices[i].own?outer:plain,size);
   if(RAND_bytes(&random,1)!=1){ok=0;break;}unsigned pad=(random&15)+1;memset(input+size,pad,pad);size+=pad;int ispk=0;
   int r=wa_signal_encrypt(m->signal,m->devices[i].jid,input,size,ct,sizeof ct,&cn,&ispk);OPENSSL_cleanse(input,sizeof input);
   if(r<0){ok=0;break;}
-  wa_node *to=wa_node_add(t,participants,"to");wa_node *enc=data(t,to,"enc",ct,cn);ok=to&&enc&&wa_node_attr(to,"jid",m->devices[i].jid)&&wa_node_attr(enc,"v","2")&&wa_node_attr(enc,"type",ispk?"pkmsg":"msg");if(ispk)needs_identity=1;
+  wa_node *to=m->history_mode?root:wa_node_add(t,participants,"to");wa_node *enc=data(t,to,"enc",ct,cn);ok=to&&enc&&(m->history_mode||wa_node_attr(to,"jid",m->devices[i].jid))&&wa_node_attr(enc,"v","2")&&wa_node_attr(enc,"type",ispk?"pkmsg":"msg");if(ispk)needs_identity=1;
  }
  if(ok&&needs_identity)ok=data(t,root,"device-identity",m->me.account,m->me.account_len)!=NULL;
  OPENSSL_cleanse(plain,sizeof plain);OPENSSL_cleanse(sync,sizeof sync);OPENSSL_cleanse(outer,sizeof outer);
@@ -173,13 +203,18 @@ static int decode_text(const uint8_t *p,size_t n,char out[WA_TEXT_MAX+1],char de
  if(!t.len||t.len>WA_TEXT_MAX||!utf8(t.ptr,t.len))return 0;memcpy(out,t.ptr,t.len);out[t.len]=0;return 1;
 }
 typedef struct {
- wa_messenger *m;const char *id,*from;wa_message_event saved;int stored;
+ wa_messenger *m;const char *id,*from;wa_message_event saved;int stored,history;
 } incoming_commit;
 static int save_before_ratchet(void *user,const uint8_t *plain,size_t n) {
  incoming_commit *c=user;unsigned pad=n?plain[n-1]:0;
  if(!pad||pad>16||pad>n)return 0;
  for(unsigned j=0;j<pad;j++)if(plain[n-j-1]!=pad)return 0;
  char text[WA_TEXT_MAX+1],dest[128]="",peer[128];int own=0;
+ wa_slice protocol,notification;
+ if((!strcmp(c->from,c->m->own)||(c->m->lid[0]&&!strcmp(c->from,c->m->lid)))&&wa_pb_bytes_field(plain,n-pad,12,&protocol)&&wa_pb_bytes_field(protocol.ptr,protocol.len,6,&notification)) {
+  if(!wa_history_save(&c->m->io,notification.ptr,notification.len))return WA_INBOX_STORAGE_ERROR;
+  c->history=1;return 0;
+ }
  if(!decode_text(plain,n-pad,text,dest,&own,0))return 0;
  if(own){
   /* Only our own authenticated account can supply an outgoing-device copy. */
@@ -212,7 +247,7 @@ static int incoming(wa_messenger *m,const wa_node *node){
  }
  char crypto[128];copy(crypto,sizeof crypto,sender);
  if(strstr(sender,"@s.whatsapp.net")){char lid[128];if(mapped(m,sender,lid)&&strstr(lid,"@lid"))device(lid,crypto,device_id(sender));}
- int got=0;for(wa_node *e=node->child;e;e=e->next){const char *type=wa_node_get(e,"type");if(strcmp(e->tag,"enc")||!type||!e->data||(strcmp(type,"pkmsg")&&strcmp(type,"msg")))continue;
+ int got=0,history=0;for(wa_node *e=node->child;e;e=e->next){const char *type=wa_node_get(e,"type");if(strcmp(e->tag,"enc")||!type||!e->data||(strcmp(type,"pkmsg")&&strcmp(type,"msg")))continue;
   /* Serialized Signal ciphertext includes framing/MAC and optional prekey
    * metadata; its plaintext fits in at most that many bytes. Allocate only for
    * this bounded stanza, rather than capping valid sync payloads at 16 KiB. */
@@ -241,7 +276,9 @@ static int incoming(wa_messenger *m,const wa_node *node){
   unsigned pad=n?plaintext[n-1]:0;
   if(!pad||pad>16||pad>n){event(m,"bad-padding",id,frombase,"",0);OPENSSL_cleanse(plaintext,capacity);free(plaintext);continue;}
   int valid=1;for(unsigned j=0;j<pad;j++)if(plaintext[n-j-1]!=pad)valid=0;
-  if(valid&&commit.stored){
+  if(valid&&own_sender){int code=wa_history_response(plaintext,n-pad);if(code>=0)event(m,"history-status","","",code==0?"El móvil principal aceptó la solicitud de historial":code==4?"El móvil principal no admite esta solicitud de historial completo. Prueba recuperar mensajes desde un chat.":"El móvil principal rechazó la solicitud de historial",code==0?1:-1);}
+  if(valid&&commit.history){history=1;event(m,"history","","","Historial recibido; pendiente de importar",0);}
+  else if(valid&&commit.stored){
    wa_message_event *saved=&commit.saved;
    event(m,saved->kind,saved->id,saved->jid,saved->text,saved->state);got=1;
   } else event(m,valid?"ignored-payload":"bad-padding",id,frombase,"",0);
@@ -257,7 +294,7 @@ static int incoming(wa_messenger *m,const wa_node *node){
  }
  /* Unsupported payloads are acknowledged without claiming decryption/delivery. */
  int ok=ack(m,node,"message");
- if(got){wa_tree *t=wa_tree_create();if(!t)return 0;wa_node *r=wa_node_add(t,NULL,"receipt");ok=ok&&r&&wa_node_attr(r,"to",from)&&wa_node_attr(r,"id",id);if(ok)ok=send(m,t);else wa_tree_free(t);}
+ if(got||history){wa_tree *t=wa_tree_create();if(!t)return 0;wa_node *r=wa_node_add(t,NULL,"receipt");ok=ok&&r&&wa_node_attr(r,"to",from)&&wa_node_attr(r,"id",id)&&(!history||wa_node_attr(r,"type","hist_sync"));if(ok)ok=send(m,t);else wa_tree_free(t);}
  return ok;
 }
 int wa_messenger_node(wa_messenger *m,const wa_node *node){

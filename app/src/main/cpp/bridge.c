@@ -179,3 +179,40 @@ JNIEXPORT jstring JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeRes
  (*env)->ReleaseStringUTFChars(env,jid,j);
  return ok?(*env)->NewStringUTF(env,resolved):NULL;
 }
+
+#include "history.h"
+#include <stdlib.h>
+JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryRequest(JNIEnv *env,jobject self,jlong h,jstring jid,jstring anchor,jboolean own,jlong time,jstring id) {
+ (void)self;if(!h||!jid||!anchor||!id||time<0)return JNI_FALSE;
+ const char *j=(*env)->GetStringUTFChars(env,jid,NULL);if(!j)return JNI_FALSE;
+ const char *a=(*env)->GetStringUTFChars(env,anchor,NULL);if(!a){(*env)->ReleaseStringUTFChars(env,jid,j);return JNI_FALSE;}
+ const char *i=(*env)->GetStringUTFChars(env,id,NULL);int ok=i&&wa_pair_history(session(h),j,a,own==JNI_TRUE,(uint64_t)time,i);
+ if(i)(*env)->ReleaseStringUTFChars(env,id,i);(*env)->ReleaseStringUTFChars(env,anchor,a);(*env)->ReleaseStringUTFChars(env,jid,j);return ok?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT jbyteArray JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryTask(JNIEnv *env,jobject self,jlong h,jint slot) {
+ (void)self;if(!h||slot<0||slot>=WA_HISTORY_TASKS)return NULL;uint8_t *buf=malloc(WA_HISTORY_NOTIFICATION_MAX);if(!buf)return NULL;
+ size_t n=0;int r=wa_pair_history_task(session(h),(unsigned)slot,buf,WA_HISTORY_NOTIFICATION_MAX,&n);jbyteArray out=NULL;
+ if(r==1){out=(*env)->NewByteArray(env,(jsize)n);if(out)(*env)->SetByteArrayRegion(env,out,0,(jsize)n,(jbyte*)buf);}
+ OPENSSL_cleanse(buf,WA_HISTORY_NOTIFICATION_MAX);free(buf);return out;
+}
+JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryDone(JNIEnv *env,jobject self,jlong h,jint slot,jbyteArray task) {
+ (void)self;if(!h||!task||slot<0||slot>=WA_HISTORY_TASKS)return JNI_FALSE;jsize n=(*env)->GetArrayLength(env,task);if(n<=0||n>WA_HISTORY_NOTIFICATION_MAX)return JNI_FALSE;
+ jbyte *p=(*env)->GetByteArrayElements(env,task,NULL);if(!p)return JNI_FALSE;int ok=wa_pair_history_done(session(h),(unsigned)slot,(uint8_t*)p,(size_t)n);(*env)->ReleaseByteArrayElements(env,task,p,JNI_ABORT);return ok?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT jstring JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryPath(JNIEnv *env,jobject self,jbyteArray task) {
+ (void)self;if(!task)return NULL;jsize n=(*env)->GetArrayLength(env,task);if(n<=0||n>WA_HISTORY_NOTIFICATION_MAX)return NULL;jbyte *p=(*env)->GetByteArrayElements(env,task,NULL);if(!p)return NULL;
+ char path[4096];int ok=wa_history_path((uint8_t*)p,(size_t)n,path,sizeof path);(*env)->ReleaseByteArrayElements(env,task,p,JNI_ABORT);return ok?(*env)->NewStringUTF(env,path):NULL;
+}
+JNIEXPORT jlong JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryOpen(JNIEnv *env,jobject self,jbyteArray task,jbyteArray encrypted) {
+ (void)self;if(!task||!encrypted)return 0;jsize n=(*env)->GetArrayLength(env,task),en=(*env)->GetArrayLength(env,encrypted);if(n<=0||n>WA_HISTORY_NOTIFICATION_MAX||en>WA_HISTORY_DOWNLOAD_MAX)return 0;
+ jbyte *p=(*env)->GetByteArrayElements(env,task,NULL);if(!p)return 0;jbyte *b=(*env)->GetByteArrayElements(env,encrypted,NULL);if(!b){(*env)->ReleaseByteArrayElements(env,task,p,JNI_ABORT);return 0;}
+ wa_history *hist=wa_history_open((uint8_t*)p,(size_t)n,(uint8_t*)b,(size_t)en);(*env)->ReleaseByteArrayElements(env,encrypted,b,JNI_ABORT);(*env)->ReleaseByteArrayElements(env,task,p,JNI_ABORT);return (jlong)(intptr_t)hist;
+}
+JNIEXPORT jobjectArray JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryNext(JNIEnv *env,jobject self,jlong h) {
+ (void)self;if(!h)return NULL;wa_message_event e;uint64_t time=0;int r=wa_history_next((wa_history*)(intptr_t)h,&e,&time);
+ if(r<0){jclass cls=(*env)->FindClass(env,"java/io/IOException");if(cls)(*env)->ThrowNew(env,cls,"Invalid history record");return NULL;}if(!r)return NULL;
+ char status[32],timestamp[32];snprintf(status,sizeof status,"%d",e.state);snprintf(timestamp,sizeof timestamp,"%llu",(unsigned long long)time);
+ const char *fields[]={e.kind,e.id,e.jid,e.text,status,timestamp};jclass cls=(*env)->FindClass(env,"java/lang/String");if(!cls)return NULL;jobjectArray out=(*env)->NewObjectArray(env,6,cls,NULL);(*env)->DeleteLocalRef(env,cls);if(!out)return NULL;
+ for(int i=0;i<6;i++){jstring value=utf8_string(env,fields[i]);if(!value)return NULL;(*env)->SetObjectArrayElement(env,out,i,value);(*env)->DeleteLocalRef(env,value);}return out;
+}
+JNIEXPORT void JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryClose(JNIEnv *env,jobject self,jlong h){(void)env;(void)self;wa_history_free((wa_history*)(intptr_t)h);}

@@ -100,6 +100,17 @@ int main(void){
  t=wa_tree_create();root=wa_node_add(t,NULL,"receipt");assert(wa_node_attr(root,"id",id)&&wa_node_attr(root,"from","22222222@lid")&&wa_node_attr(root,"type","read"));assert(wa_messenger_node(m,root));assert(wa_messenger_event(m)->state==4&&!strcmp(wa_messenger_event(m)->jid,"34222222222@s.whatsapp.net"));wa_tree_free(t);clear_events(m);
  t=wa_tree_create();root=wa_node_add(t,NULL,"receipt");assert(wa_node_attr(root,"id",id)&&wa_node_attr(root,"from","11111111@lid")&&wa_node_attr(root,"type","read-self"));
  assert(wa_messenger_node(m,root)&&!wa_messenger_event(m));wa_tree_free(t);
+ /* Peer history requests encrypt only to our authenticated primary device. */
+ clear_events(m);m->ready=1;
+ assert(wa_messenger_history(m,"34222222222@s.whatsapp.net","incoming-test",0,1700000000000ULL,"3EB0AABBCCDDEEFF"));
+ copy(qid,sizeof qid,m->query);t=iq("result",qid,NULL);us=wa_node_add(t,t->root,"usync");list=wa_node_add(t,us,"list");user(t,list,"34111111111@s.whatsapp.net","11111111@lid",1);assert(wa_messenger_node(m,t->root));wa_tree_free(t);
+ t=captured(&c);assert(!strcmp(t->root->tag,"message")&&!strcmp(wa_node_get(t->root,"category"),"peer")&&!wa_node_child(t->root,"participants"));
+ enc=wa_node_child(t->root,"enc");assert(enc);uint8_t request_plain[4096];size_t request_len=0;
+ assert(wa_signal_decrypt(primary,"11111111:1@lid",!strcmp(wa_node_get(enc,"type"),"pkmsg"),enc->data,enc->data_len,request_plain,sizeof request_plain,&request_len)>=0);
+ wa_slice protocol,pdo,request,chat_id;unsigned request_pad=request_plain[request_len-1];
+ assert(wa_pb_bytes_field(request_plain,request_len-request_pad,12,&protocol)&&wa_pb_bytes_field(protocol.ptr,protocol.len,16,&pdo)&&wa_pb_bytes_field(pdo.ptr,pdo.len,4,&request)&&wa_pb_bytes_field(request.ptr,request.len,1,&chat_id));
+ assert(chat_id.len==strlen("34222222222@s.whatsapp.net")&&!memcmp(chat_id.ptr,"34222222222@s.whatsapp.net",chat_id.len));wa_tree_free(t);
+ m->pending=0;m->phase=0;clear_events(m);
  /* TOFU is pinned; no silent key replacement on a changed identity. */
  uint8_t pre[32];assert(wa_signal_prekey(primary,51,pre));assert(wa_signal_bundle(m->signal,"22222222:0@lid",pi.registration_id,pi.identity_public,1,pi.prekey_public,pi.prekey_signature,51,pre)==-1010);
  m->ready=1;assert(!wa_messenger_send(m,"bad@evil",id,message,sizeof message-1));uint8_t bad[]={0xc0,0x80};assert(!wa_messenger_send(m,"34222222222@s.whatsapp.net",id,bad,sizeof bad));

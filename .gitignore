@@ -26,3 +26,5 @@ core/test_messaging
 identity.v1.signal/
 
 core/test_inbox
+
+/core/test_history

@@ -17,14 +17,16 @@ cc $FLAGS register.c wire.c test_register.c -lcrypto -o test_register
 ./test_register
 cc $FLAGS node.c test_node.c -lz -o test_node
 ./test_node
-cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c messaging.c storage_posix.c node.c pairing.c register.c noise.c wire.c ws.c handshake.c test_identity.c "$SIG_LIB" -lcrypto -lz -o test_identity
+cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c history.c messaging.c storage_posix.c node.c pairing.c register.c noise.c wire.c ws.c handshake.c test_identity.c "$SIG_LIB" -lcrypto -lz -o test_identity
 ./test_identity
-cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c messaging.c storage_posix.c node.c pairing.c register.c noise.c wire.c ws.c handshake.c probe.c "$SIG_LIB" -lssl -lcrypto -lz -o wa_probe
-cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c messaging.c storage_posix.c node.c register.c noise.c wire.c ws.c handshake.c test_pairing.c "$SIG_LIB" -lcrypto -lz -o test_pairing
+cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c history.c messaging.c storage_posix.c node.c pairing.c register.c noise.c wire.c ws.c handshake.c probe.c "$SIG_LIB" -lssl -lcrypto -lz -o wa_probe
+cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c history.c messaging.c storage_posix.c node.c register.c noise.c wire.c ws.c handshake.c test_pairing.c "$SIG_LIB" -lcrypto -lz -o test_pairing
 ./test_pairing
 
-cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c storage_posix.c node.c noise.c wire.c test_messaging.c "$SIG_LIB" -lcrypto -lz -o test_messaging
+cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c history.c storage_posix.c node.c noise.c wire.c test_messaging.c "$SIG_LIB" -lcrypto -lz -o test_messaging
 ./test_messaging
 cc $FLAGS inbox.c test_inbox.c -lcrypto -o test_inbox
 ./test_inbox
+cc $FLAGS wire.c storage_posix.c test_history.c -lcrypto -lz -o test_history
+./test_history
 printf 'BUILD OK: run ./wa_probe to test a live connection (network required)\n'

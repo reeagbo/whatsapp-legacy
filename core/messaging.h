@@ -15,6 +15,7 @@ int wa_messenger_node(wa_messenger *,const wa_node *);
 int wa_messenger_send(wa_messenger *,const char *jid,const char *id,const uint8_t *utf8,size_t);
 /* Resolve a stored LID to its known phone address; unknown LIDs stay LIDs. */
 int wa_messenger_resolve(wa_messenger *,const char *jid,char out[128]);
+int wa_messenger_history(wa_messenger *,const char *jid,const char *oldest_id,int from_me,uint64_t oldest_ms,const char *request_id);
 void wa_messenger_tick(wa_messenger *,uint64_t now_ms);
 const wa_message_event *wa_messenger_event(const wa_messenger *);
 void wa_messenger_event_done(wa_messenger *);

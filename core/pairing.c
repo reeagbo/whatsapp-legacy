@@ -1,4 +1,5 @@
 #include "pairing.h"
+#include "history.h"
 #include "handshake.h"
 #include "identity.h"
 #include "node.h"
@@ -352,6 +353,9 @@ int wa_pair_stored(wa_pair_session *s,const char *id,const char *jid,int outgoin
 int wa_pair_resolve(wa_pair_session *s,const char *jid,char out[128]) {
   return s&&wa_messenger_resolve(s->messenger,jid,out);
 }
+int wa_pair_history(wa_pair_session *s,const char *jid,const char *anchor,int own,uint64_t time,const char *id) {return s&&wa_messenger_history(s->messenger,jid,anchor,own,time,id);}
+int wa_pair_history_task(wa_pair_session *s,unsigned slot,uint8_t *out,size_t cap,size_t *n) {return s&&s->messenger?wa_history_task(&s->message_storage,slot,out,cap,n):-1;}
+int wa_pair_history_done(wa_pair_session *s,unsigned slot,const uint8_t *p,size_t n) {return s&&s->messenger&&wa_history_done(&s->message_storage,slot,p,n);}
 void wa_pair_tick(wa_pair_session *s,uint64_t now) { if(s&&s->messenger)wa_messenger_tick(s->messenger,now); }
 const wa_message_event *wa_pair_event(const wa_pair_session *s) { return s?wa_messenger_event(s->messenger):NULL; }
 void wa_pair_event_done(wa_pair_session *s) {
