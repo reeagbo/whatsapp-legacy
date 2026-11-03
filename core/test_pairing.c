@@ -42,6 +42,12 @@ static int successful_put(void *u,const char *key,const uint8_t *p,size_t n) {
   (void)u;(void)key;(void)p;(void)n;return 1;
 }
 int main(void) {
+  char hint[24];
+  address_hint("12345678187136:2@lid",hint);assert(!strcmp(hint,"lid:187136"));
+  address_hint("34634567890@s.whatsapp.net",hint);assert(!strcmp(hint,"pn:567890"));
+  address_hint("secret@example.com",hint);assert(!strcmp(hint,"unknown"));
+  address_hint("12345@lid",hint);assert(!strcmp(hint,"lid:short"));
+
   char dir[] = "/tmp/wa-pairing-XXXXXX", path[256];
   assert(mkdtemp(dir));
   snprintf(path, sizeof path, "%s/keys", dir);

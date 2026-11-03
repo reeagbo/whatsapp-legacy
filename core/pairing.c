@@ -88,7 +88,27 @@ static const char *safe_code(const char *code) {
   return code && strlen(code) > 0 && strlen(code) <= 4 &&
     strspn(code,"0123456789") == strlen(code) ? code : "<absent-or-redacted>";
 }
+/* Explicitly requested address diagnostics: domain + last six digits only. */
+static void address_hint(const char *jid,char out[24]) {
+  snprintf(out,24,"unknown");if(!jid)return;
+  const char *at=strchr(jid,'@'),*colon=strchr(jid,':');if(!at)return;
+  const char *end=colon&&colon<at?colon:at;size_t len=(size_t)(end-jid);
+  if(!len||len>40)return;
+  for(size_t j=0;j<len;j++)if(jid[j]<'0'||jid[j]>'9')return;
+  if(colon&&colon<at){if(at-colon<2||at-colon>4)return;for(const char *p=colon+1;p<at;p++)if(*p<'0'||*p>'9')return;}
+  const char *kind=!strcmp(at+1,"lid")?"lid":!strcmp(at+1,"s.whatsapp.net")?"pn":NULL;
+  if(!kind)return;if(len<=6){snprintf(out,24,"%s:short",kind);return;}size_t shown=6;
+  snprintf(out,24,"%s:%.*s",kind,(int)shown,end-shown);
+}
 static void trace_node(wa_pair_session *s, const char *direction, const wa_node *n) {
+  if(n&&!strcmp(n->tag,"message")) {
+    static const char *attrs[]={"from","to","recipient","sender_pn","sender_lid","recipient_pn","recipient_lid"};
+    for(size_t j=0;j<sizeof attrs/sizeof attrs[0];j++) {
+      const char *address=wa_node_get(n,attrs[j]);if(!address)continue;
+      char hint[24];address_hint(address,hint);
+      trace(s,"%s MESSAGE_ADDRESS field=%s address=%s",direction,attrs[j],hint);
+    }
+  }
   if (!n) return;
   const char *id = wa_node_get(n,"id");
   const char *kind = !id ? "none" : !strcmp(id,"legacy-pair-1") ? "pair-request" :

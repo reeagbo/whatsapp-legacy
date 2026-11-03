@@ -123,6 +123,7 @@ class MainActivity : Activity() {
     private var phoneNames: Map<String,String> = emptyMap()
     private val checkedContacts = mutableSetOf<String>()
     private var contactGeneration = 0
+    private val identityDiagnostics = mutableMapOf<String,String>()
     private var chatTitle: TextView? = null
     private var addressLabel: TextView? = null
     private val contactRequest = 302
@@ -144,8 +145,19 @@ class MainActivity : Activity() {
     private fun display(jid: String) = if (jid.endsWith("@lid")) "…" + jid.substringBefore('@').takeLast(6) else "+" + jid.substringBefore('@').substringBefore(':')
     private fun contactName(chat: ChatStore.Chat) = chat.name.takeIf { it.isNotBlank() }
         ?: phoneNames[chat.jid] ?: chat.pushName.takeIf { it.isNotBlank() } ?: display(chat.jid)
+    private fun traceIdentity(chat: ChatStore.Chat) {
+        val source=when {
+            chat.name.isNotBlank() -> "manual"
+            phoneNames.containsKey(chat.jid) -> "agenda"
+            chat.pushName.isNotBlank() -> "received"
+            else -> "identifier"
+        }
+        val line="CHAT_IDENTITY address=${DebugLog.addressHint(chat.jid)} number_known=${chat.jid.endsWith("@s.whatsapp.net")} name_source=$source agenda_permission=${phoneContacts.allowed()}"
+        if(identityDiagnostics[chat.jid]!=line) { identityDiagnostics[chat.jid]=line;debugLog.add(line) }
+    }
     private fun title(jid: String) = store.chats().firstOrNull { it.jid == store.resolve(jid) }?.let { contactName(it) } ?: display(jid)
     private fun refreshConversation() {
+        store.chats().forEach { traceIdentity(it) }
         val current = conversation
         if (current == null) showList() else {
             conversation = store.resolve(current)
@@ -181,7 +193,7 @@ class MainActivity : Activity() {
         checkedContacts.addAll(requested)
         val generation=contactGeneration
         contactWorker.execute {
-            val names=try { phoneContacts.names(requested) } catch(error: Exception) {
+            val names=try { phoneContacts.names(requested) { debugLog.add(it) } } catch(error: Exception) {
                 debugLog.add("PHONEBOOK_LOOKUP_FAILED type=${error.javaClass.simpleName}")
                 emptyMap<String,String>()
             }
@@ -248,6 +260,7 @@ class MainActivity : Activity() {
             addView(label("Pulsa + para añadir un número y escribirle.",16f,muted).apply { setPadding(0,dp(12),0,0) })
         })
         for(chat in chats) {
+            traceIdentity(chat)
             val name=contactName(chat)
             val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); setBackgroundColor(surface); minimumHeight=dp(86); isClickable=true; contentDescription="Abrir conversación con $name" }
             row.addView(label(name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),28) },LinearLayout.LayoutParams(dp(52),dp(52)))
@@ -275,7 +288,9 @@ class MainActivity : Activity() {
         } };dialog.show()
     }
     private fun showChat(jid: String) {
-        conversation=store.resolve(jid);newPage();header(title(conversation!!),true)
+        conversation=store.resolve(jid)
+        debugLog.add("CHAT_OPEN selected=${DebugLog.addressHint(jid)} canonical=${DebugLog.addressHint(conversation!!)}")
+        newPage();header(title(conversation!!),true)
         messageList=column().apply { setPadding(dp(12),dp(16),dp(12),dp(16)) }
         messageScroll=ScrollView(this).apply { isFillViewport=true;addView(messageList) }
         page.addView(messageScroll,LinearLayout.LayoutParams(-1,0,1f))
@@ -306,6 +321,7 @@ class MainActivity : Activity() {
         if(bytes.size>4000){compose?.error="Máximo 4.000 bytes de texto por mensaje";return}
         val active=connection;if(!connected||active==null){Toast.makeText(this,"Conecta la sesión primero",Toast.LENGTH_SHORT).show();return}
         val id="3EB0"+UUID.randomUUID().toString().replace("-","").uppercase(Locale.ROOT)
+        debugLog.add("MESSAGE_TARGET direction=outgoing selected=${DebugLog.addressHint(jid)} stored=${DebugLog.addressHint(store.resolve(jid))}")
         try { store.append(id,jid,text,true,0) } catch(error: Exception) { storageFailure(error);return }
         pendingMessage=id;compose?.text?.clear();refreshMessages();updateSend()
         if(!active.send(jid,id,bytes)){store.status(id,-1,"No se pudo iniciar el envío");pendingMessage=null;refreshMessages();updateSend()}
@@ -318,8 +334,11 @@ class MainActivity : Activity() {
         for(lid in candidates) {
             val pn=connection?.resolve(lid)
             if(pn!=null && pn.endsWith("@s.whatsapp.net")) {
-                if(store.link(lid,pn)) debugLog.add("CONTACT_ALIAS_RECONCILED")
-                else debugLog.add("CONTACT_ALIAS_CONFLICT ignored=true")
+                if(store.link(lid,pn)) debugLog.add("CONTACT_ALIAS_RECONCILED from=${DebugLog.addressHint(lid)} to=${DebugLog.addressHint(pn)}")
+                else debugLog.add("CONTACT_ALIAS_CONFLICT from=${DebugLog.addressHint(lid)} proposed=${DebugLog.addressHint(pn)} ignored=true")
+            } else {
+                val line="CONTACT_ALIAS_UNRESOLVED from=${DebugLog.addressHint(lid)}"
+                if(identityDiagnostics["alias:$lid"]!=line) { identityDiagnostics["alias:$lid"]=line;debugLog.add(line) }
             }
         }
         for(e in events) {
@@ -329,6 +348,7 @@ class MainActivity : Activity() {
                 "status" -> { val matched=store.status(e[1],state,e[3],e[2]);if(matched&&e[1]==pendingMessage&&(state<0||state>=2))pendingMessage=null }
                 "message", "sent-copy" -> if(e[1].isNotBlank()&&e[2].isNotBlank()) {
                     debugLog.hide(e[2].substringBefore('@'))
+                    debugLog.add("MESSAGE_TARGET kind=${e[0]} event=${DebugLog.addressHint(e[2])} stored=${DebugLog.addressHint(store.resolve(e[2]))}")
                     store.append(e[1],e[2],e[3],e[0]=="sent-copy",state)
                     // The native inbox keeps the text until this SQLite commit succeeds.
                     connection?.stored(e[1],e[2],e[0]=="sent-copy")

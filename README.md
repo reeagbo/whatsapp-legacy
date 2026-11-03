@@ -6,6 +6,23 @@ claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
 OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
 y de nombre del servidor, sin excepciones de confianza.
 
+## Diagnóstico de identidades (pendiente de compilar)
+
+Por petición del usuario, el log incluye dominio (`lid`/`pn`) y los últimos seis
+dígitos de direcciones válidas. `MESSAGE_ADDRESS` registra remitente/destinatario
+y alternativas del sobre; `MESSAGE_TARGET` indica la conversación de guardado;
+`CONTACT_ALIAS_*` refleja la resolución LID/número. `CHAT_IDENTITY` muestra
+si conocemos el número, permiso de agenda y origen del nombre (manual, agenda,
+recibido o identificador), sin registrar el nombre. `AGENDA_LOOKUP` cuenta los
+candidatos, coincidencias completas y si se aceptó una. Abrir un chat genera
+`CHAT_OPEN` para correlacionar el caso visible con el log. Las terminaciones
+pueden coincidir entre personas y no son una prueba suficiente para unir chats.
+
+No se registran teléfonos completos, identificadores completos, cuerpos de
+mensajes ni nombres de agenda. Estas entradas aparecen con eventos nuevos o al
+abrir conversaciones con la próxima versión; no reconstruyen datos omitidos por
+los logs anteriores. Versión y Actions manual permanecen sin cambios.
+
 ## Cambios posteriores a 0.9 (sin compilar)
 
 - La integración con la agenda está siempre activa. La app solicita el permiso

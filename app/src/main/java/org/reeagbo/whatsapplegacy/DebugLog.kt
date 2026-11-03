@@ -64,4 +64,13 @@ class DebugLog(private val file: File) {
         value = value.replace(Regex("(?<![A-Za-z0-9])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9])"), "[opaque-value]")
         return value
     }
+    companion object {
+        /** Only a validated address domain and at most six trailing digits. */
+        fun addressHint(jid: String): String {
+            val match=Regex("^([0-9]{1,40})(?::[0-9]{1,3})?@(lid|s\\.whatsapp\\.net)$").matchEntire(jid)
+                ?: return "unknown"
+            val kind=if(match.groupValues[2]=="lid") "lid" else "pn"
+            return kind+":"+if(match.groupValues[1].length<=6) "short" else match.groupValues[1].takeLast(6)
+        }
+    }
 }

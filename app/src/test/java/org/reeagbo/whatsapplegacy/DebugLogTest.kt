@@ -46,4 +46,19 @@ class DebugLogTest {
             assertTrue(log.snapshot().contains("DNS_START"))
         } finally { dir.deleteRecursively() }
     }
+    @Test fun addressDiagnosticsKeepSuffixAndDomainWithoutFullIdentifiers() {
+        assertEquals("lid:187136",DebugLog.addressHint("12345678187136:2@lid"))
+        assertEquals("pn:567890",DebugLog.addressHint("34634567890@s.whatsapp.net"))
+        assertEquals("unknown",DebugLog.addressHint("secret@example.com"))
+        assertEquals("lid:short",DebugLog.addressHint("12345@lid"))
+        assertEquals("unknown",DebugLog.addressHint("34634567890@s.whatsapp.net extra"))
+        val dir=Files.createTempDirectory("wa-address-log").toFile()
+        try {
+            val log=DebugLog(dir.resolve("latest.txt"))
+            log.hide("12345678187136")
+            log.add("CHAT_IDENTITY address=${DebugLog.addressHint("12345678187136@lid")} name_source=identifier")
+            assertTrue(log.snapshot().contains("lid:187136"))
+            assertFalse(log.snapshot().contains("12345678187136"))
+        } finally { dir.deleteRecursively() }
+    }
 }
