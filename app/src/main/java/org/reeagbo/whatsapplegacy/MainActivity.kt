@@ -413,12 +413,16 @@ class MainActivity : Activity() {
                 for((slot,task) in tasks) {
                     if(Thread.currentThread().isInterrupted)break
                     var handle=0L
+                    var stage="path"
                     try {
                         val path=nativeHistoryPath(task) ?: throw java.io.IOException("Invalid history path")
+                        debugLog.add("HISTORY_PATH kind=${if(path.isEmpty()) "inline" else "cdn-relative"}")
+                        stage="download"
                         val encrypted=if(path.isEmpty()) ByteArray(0) else {
                             // A fixed host and no redirects keep media requests separate from account traffic.
                             val request=Request.Builder().url("https://mmg.whatsapp.net$path").header("Origin","https://web.whatsapp.com").build()
                             historyHttp.newCall(request).execute().use { response ->
+                                debugLog.add("HISTORY_DOWNLOAD http=${response.code}")
                                 if(!response.isSuccessful)throw java.io.IOException("History download unavailable")
                                 val body=response.body ?: throw java.io.IOException("Empty history download")
                                 if(body.contentLength()>8L*1024*1024)throw java.io.IOException("History chunk too large")
@@ -429,9 +433,12 @@ class MainActivity : Activity() {
                                 }
                             }
                         }
+                        debugLog.add("HISTORY_DOWNLOAD_COMPLETE bytes=${encrypted.size}")
+                        stage="decode"
                         handle=nativeHistoryOpen(task,encrypted)
                         if(handle==0L)throw java.io.IOException("History integrity or format check failed")
                         var importedMessages=0;var importedChats=0
+                        stage="sqlite"
                         db.historyTransaction {
                             while(true) {
                                 if(Thread.currentThread().isInterrupted)throw java.io.InterruptedIOException()
@@ -446,11 +453,12 @@ class MainActivity : Activity() {
                             }
                         }
                         // Only a committed complete chunk may remove its durable task.
+                        stage="acknowledge"
                         val confirmed=active.historyDone(slot,task)
                         debugLog.add("HISTORY_CHUNK_COMMITTED chats=$importedChats messages=$importedMessages task_confirmed=$confirmed")
                         messages+=importedMessages;chats+=importedChats;succeeded++
                         if(!confirmed)throw java.io.IOException("History task acknowledgement unavailable")
-                    } catch(error: Exception) { errorType=error.javaClass.simpleName;debugLog.add("HISTORY_CHUNK_FAILED type=$errorType retained=true") }
+                    } catch(error: Exception) { errorType=error.javaClass.simpleName;debugLog.add("HISTORY_CHUNK_FAILED stage=$stage type=$errorType retained=true") }
                     finally { if(handle!=0L)nativeHistoryClose(handle) }
                 }
             } catch(error: Exception) { errorType=error.javaClass.simpleName;debugLog.add("HISTORY_IMPORT_FAILED type=$errorType retained=true") }

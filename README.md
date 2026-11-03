@@ -6,6 +6,21 @@ claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
 OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
 y de nombre del servidor, sin excepciones de confianza.
 
+## Corrección pendiente después de 0.11
+
+El log real confirma rechazo de la petición completa y una notificación de
+historial tras la petición por chat. La importación falló con IOException y el
+trabajo quedó retenido. No hay commit de historial en ese registro.
+
+Se corrige una restricción errónea del cliente: `directPath` no tiene por qué
+comenzar por `/mms/` (ruta de subida). Ahora se aceptan rutas CDN relativas como
+`/v/...`, manteniendo HTTPS, host fijo, prohibición de autoridades externas,
+caracteres de control y redirecciones. El fallo del log es compatible con esa
+restricción, pero su etapa no estaba registrada y falta verificarlo en móvil.
+El diagnóstico nuevo indica path/download/decode/sqlite/acknowledge, estado HTTP
+y tamaño descargado, sin URL ni claves. Pruebas de rutas añadidas, pendientes
+de compilar con la siguiente petición de versión. Se conserva 0.11 y Actions manual.
+
 ## Versión 0.11-debug: reconexión e historial experimental
 
 Incluye **Pendiente** sin identificadores visibles y reintentos de red espaciados.

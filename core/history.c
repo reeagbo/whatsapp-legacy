@@ -37,7 +37,9 @@ int wa_history_save(const wa_storage *io,const uint8_t *p,size_t n){
  end:OPENSSL_cleanse(b,WA_HISTORY_NOTIFICATION_MAX);free(b);return ok;
 }
 int wa_history_done(const wa_storage *io,unsigned slot,const uint8_t *p,size_t n){uint8_t *b=malloc(WA_HISTORY_NOTIFICATION_MAX);if(!b)return 0;size_t z=0;int r=wa_history_task(io,slot,b,WA_HISTORY_NOTIFICATION_MAX,&z);int ok=r==0;if(r==1&&z==n&&!CRYPTO_memcmp(p,b,n)){char k[32];key(slot,k);ok=io->put(io->user,k,NULL,0);}OPENSSL_cleanse(b,WA_HISTORY_NOTIFICATION_MAX);free(b);return ok;}
-int wa_history_path(const uint8_t *p,size_t n,char *out,size_t cap){wa_slice s={p,n},inline_data;if(bytes(s,11,&inline_data)&&inline_data.len){if(cap)out[0]=0;return 1;}if(!str(s,5,out,cap)||strncmp(out,"/mms/",5))return 0;for(const char *c=out;*c;c++)if((unsigned char)*c<=32||*c=='\\'||*c=='#')return 0;return 1;}
+int wa_history_path(const uint8_t *p,size_t n,char *out,size_t cap){wa_slice s={p,n},inline_data;if(bytes(s,11,&inline_data)&&inline_data.len){if(cap)out[0]=0;return 1;}/* directPath is a CDN-relative path, not necessarily the upload /mms/ route.
+ * The adapter fixes the HTTPS host and refuses redirects. */
+ if(!str(s,5,out,cap)||out[0]!='/'||!out[1]||out[1]=='/')return 0;for(const char *c=out;*c;c++)if((unsigned char)*c<=32||(unsigned char)*c>=127||*c=='\\'||*c=='#')return 0;return 1;}
 int wa_history_response(const uint8_t *p,size_t n) {
  wa_slice s={p,n},protocol,response,result,full;
  if(!bytes(s,12,&protocol)||!bytes(protocol,17,&response)||!bytes(response,3,&result)||!bytes(result,6,&full))return -1;
