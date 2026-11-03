@@ -17,11 +17,11 @@ extern int wa_crypto_signal_context(signal_context **);
 static int address(const char *jid,signal_protocol_address *a,char name[96]){
  if(!jid)return 0;
  const char *at=strchr(jid,'@'),*colon=strchr(jid,':');if(!at||at-jid<1||at-jid>64)return 0;
- size_t n=(size_t)((colon&&colon<at?colon:at)-jid);if(n>40)return 0;
+ size_t n=(size_t)((colon&&colon<at?colon:at)-jid);if(!n||n>40)return 0;
  for(size_t j=0;j<n;j++)if(jid[j]<'0'||jid[j]>'9')return 0;
  int domain=!strcmp(at+1,"s.whatsapp.net")?0:!strcmp(at+1,"lid")?1:-1;if(domain<0)return 0;
  memcpy(name,jid,n);name[n]=0;if(domain)strcat(name,"_1");
- unsigned long d=0;if(colon&&colon<at){char *end;d=strtoul(colon+1,&end,10);if(end!=at||d>255)return 0;}
+ unsigned long d=0;if(colon&&colon<at){char *end;d=strtoul(colon+1,&end,10);if(end==colon+1||end!=at||d>255)return 0;}
  *a=(signal_protocol_address){name,strlen(name),(int32_t)d};return 1;
 }
 static void key_address(char out[80],const char *kind,const signal_protocol_address *a){

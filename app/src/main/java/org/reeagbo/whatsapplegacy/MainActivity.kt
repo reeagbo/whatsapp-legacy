@@ -93,6 +93,7 @@ class MainActivity : Activity() {
     private var statusText = "Sin conexión"
     private var pendingMessage: String? = null
     private var reconnects = 0
+    private var sessionGeneration = 0
     private val green = Color.rgb(18, 101, 82)
     private val ink = Color.rgb(30, 45, 42)
     private val muted = Color.rgb(96, 112, 107)
@@ -234,7 +235,7 @@ class MainActivity : Activity() {
         settingsBody.addView(save);settingsBody.addView(view)
         pair.setOnClickListener { val phone=number.text.toString().trim();if(!phone.matches(Regex("^[1-9][0-9]{7,14}$")))number.error="Usa el prefijo de país y entre 8 y 15 dígitos" else start(phone) }
         check.setOnClickListener { reconnects=0;start("") }
-        stop.setOnClickListener { connection?.cancel();connection=null;connected=false;pendingMessage=null;store.interrupted();render("Desconectado. Las claves se conservan.","",false);updateSend() }
+        stop.setOnClickListener { sessionGeneration++;connection?.cancel();connection=null;connected=false;pendingMessage=null;store.interrupted();render("Desconectado. Las claves se conservan.","",false);updateSend() }
         showList();render("Sin conexión · abre ⋮ para vincular", "",false)
         if(File(filesDir,"identity.v1").exists())start("")
     }
@@ -255,6 +256,7 @@ class MainActivity : Activity() {
     }
 
     private fun start(phone: String) {
+        sessionGeneration++
         connection?.cancel()
         connected=false
         updateSend()
@@ -274,6 +276,7 @@ class MainActivity : Activity() {
         private var finished = false
         private var lastState: Int? = null
         private var authenticated = false
+        private var lastIncoming = SystemClock.elapsedRealtime()
         fun send(jid: String, id: String, text: ByteArray): Boolean = synchronized(lock) {
             if(finished || handle==0L)return@synchronized false
             nativeTick(handle,SystemClock.elapsedRealtime())
@@ -319,19 +322,25 @@ class MainActivity : Activity() {
 
         override fun onOpen(webSocket: WebSocket, response: Response) = synchronized(lock) {
             if (finished) { webSocket.cancel(); return@synchronized }
+            lastIncoming=SystemClock.elapsedRealtime()
             log("WEBSOCKET_OPEN http=${response.code} tls=${response.handshake?.tlsVersion?.javaName}")
             nativeStart(handle)
             drainNative()
             flush(webSocket)
             publish()
             if (!finished) heartbeat = timer.scheduleAtFixedRate({ synchronized(lock) {
-                if (!finished && handle != 0L) { nativeTick(handle,SystemClock.elapsedRealtime());nativePing(handle); flush(webSocket); publish() }
+                if (!finished && handle != 0L) {
+                    val now=SystemClock.elapsedRealtime()
+                    if(now-lastIncoming>75000)finish("WhatsApp no responde. Reconectando…",retryNetwork=authenticated)
+                    else { nativeTick(handle,now);nativePing(handle);flush(webSocket);publish() }
+                }
             } }, 15, 15, TimeUnit.SECONDS)
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) = synchronized(lock) {
             if (finished) return@synchronized
             if (bytes.size > 2 * 1024 * 1024) { finish("Respuesta demasiado grande."); return@synchronized }
+            lastIncoming=SystemClock.elapsedRealtime()
             log("WEBSOCKET_RX binary_bytes=${bytes.size}")
             nativeFeed(handle, bytes.toByteArray())
             drainNative()
@@ -414,7 +423,8 @@ class MainActivity : Activity() {
                         render(status, "", false)
                         if(retryNetwork && reconnects<3) {
                             val delay=(2000L shl reconnects++)
-                            handler.postDelayed({ if(connection==null&&!destroyed)start("") },delay)
+                            val generation=sessionGeneration
+                            handler.postDelayed({ if(connection==null&&!destroyed&&generation==sessionGeneration)start("") },delay)
                         }
                     }
                 }

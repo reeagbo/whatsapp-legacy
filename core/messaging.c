@@ -20,7 +20,7 @@ struct wa_messenger {
 static int copy(char *out,size_t cap,const char *s){if(!s||strlen(s)>=cap)return 0;memcpy(out,s,strlen(s)+1);return 1;}
 static int base(const char *jid,char out[128]){
  if(!jid)return 0;const char *at=strchr(jid,'@'),*colon=strchr(jid,':');if(!at||at-jid<1||at-jid>40)return 0;
- size_t n=(size_t)((colon&&colon<at?colon:at)-jid);for(size_t i=0;i<n;i++)if(jid[i]<'0'||jid[i]>'9')return 0;
+ size_t n=(size_t)((colon&&colon<at?colon:at)-jid);if(!n)return 0;for(size_t i=0;i<n;i++)if(jid[i]<'0'||jid[i]>'9')return 0;
  if(strcmp(at+1,"s.whatsapp.net")&&strcmp(at+1,"lid"))return 0;
  int k=snprintf(out,128,"%.*s@%s",(int)n,jid,at+1);return k>0&&k<128;
 }
