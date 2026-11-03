@@ -13,6 +13,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake libssl-dev zlib1g-dev
       - name: Test C99 core and pairing protocol
         run: bash core/build.sh
+      - name: Check SQLite migration without Android
+        run: python scripts/check-storage-sql.py
       - name: Probe live authenticated channel without a phone or account
         continue-on-error: true
         run: timeout 60 core/wa_probe
@@ -75,7 +77,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: |
-            adb install app/build/outputs/apk/debug/whatsapp-legacy-0.7-debug.apk
+            adb install app/build/outputs/apk/debug/whatsapp-legacy-0.8-debug.apk
             python scripts/ui-smoke.py
       - name: Upload UI verification screenshots
         if: always()
@@ -86,7 +88,7 @@ jobs:
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
-          name: whatsapp-legacy-0.7-debug
+          name: whatsapp-legacy-0.8-debug
           path: app/build/outputs/apk/debug/whatsapp-legacy-*.apk
           if-no-files-found: error
           retention-days: 30

@@ -64,7 +64,7 @@ considerar que Android borrará sus claves privadas.
 Solo por petición expresa del usuario se inicia manualmente
 `.github/workflows/android.yml` mediante `workflow_dispatch`: pruebas C99, sonda online sin
 número de teléfono (diagnóstica, no bloqueante), compilación y Android Lint.
-Descarga el artefacto con versión `whatsapp-legacy-0.7-debug` de la ejecución correcta.
+Descarga el artefacto con versión `whatsapp-legacy-0.8-debug` de la ejecución correcta.
 
 Para pruebas locales: `bash core/build.sh`. Requiere CMake, compilador C99,
 OpenSSL y zlib de desarrollo. Para la sonda online sin cuenta: `core/wa_probe`.
@@ -167,3 +167,15 @@ commit Signal al fallar el guardado, duplicados, recibos y reconexión. Esas
 pruebas C/Kotlin no se han compilado ni ejecutado por instrucción del usuario.
 Los cambios no incluyen recuperación del historial previo a la vinculación ni
 reintentos automáticos de descifrado con solicitud de nuevas claves.
+
+
+## Versión solicitada 0.8
+
+Incluye el modo oscuro, la corrección de recepción de paquetes grandes y los
+cambios de estabilidad y persistencia. Las nueve pruebas C99 y la comprobación
+de migración SQLite pasan localmente; la compilación Android, pruebas JVM y
+emulador se ejecutan para esta entrega solicitada por el usuario.
+La rama principal conserva el workflow exclusivamente manual. Si el conector
+no expone workflow_dispatch, se construye desde una rama temporal aislada,
+creada expresamente para esta solicitud; no se activan builds por guardar
+cambios en main. Se desactiva el disparador de esa rama al acabar.
