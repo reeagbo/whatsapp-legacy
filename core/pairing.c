@@ -22,7 +22,7 @@ struct wa_pair_session {
 
   uint8_t ephemeral_private[32], ephemeral_public[32];
 
-  int state, proof, code_ack, hello_sent, finish_sent;
+  int state, proof, code_ready, hello_sent, finish_sent;
 
   uint8_t *input;
   size_t input_len;
@@ -85,6 +85,10 @@ static const char *safe_code(const char *code) {
 }
 static void trace_node(wa_pair_session *s, const char *direction, const wa_node *n) {
   if (!n) return;
+  const char *id = wa_node_get(n,"id");
+  const char *kind = !id ? "none" : !strcmp(id,"legacy-pair-1") ? "pair-request" :
+    !strcmp(id,"legacy-finish-1") ? "pair-finish" : !strncmp(id,"legacy-ping-",12) ? "ping" : "other";
+  trace(s,"%s CORRELATION id_kind=%s",direction,kind);
   const char *code = wa_node_get(n,"code"); if(!code)code=wa_node_get(n,"reason");
   trace(s,"%s NODE tag=%s type=%s code=%s attrs=%zu data_bytes=%zu",direction,
         safe_tag(n->tag),safe_type(wa_node_get(n,"type")),safe_code(code),n->attr_count,n->data_len);
@@ -274,7 +278,7 @@ const char *wa_pair_status(const wa_pair_session *s) {
   return s ? s->status : "Sesion no disponible.";
 }
 const char *wa_pair_code(const wa_pair_session *s) {
-  return s && s->state == 3 && s->code_ack ? s->code : "";
+  return s && s->state == 3 && s->code_ready ? s->code : "";
 }
 static int send_node(wa_pair_session *s, wa_tree *t) {
   if (!t)
@@ -303,7 +307,7 @@ static wa_tree *iq(const char *type, const char *id, const char *xmlns) {
     return NULL;
   wa_node *n = wa_node_add(t, NULL, "iq");
 
-  if (!wa_node_attr(n, "to", "s.whatsapp.net") ||
+  if (!wa_node_attr(n, "to", "@s.whatsapp.net") ||
       !wa_node_attr(n, "type", type) || !wa_node_attr(n, "id", id) ||
       (xmlns && !wa_node_attr(n, "xmlns", xmlns))) {
     wa_tree_free(t);
@@ -331,6 +335,11 @@ static wa_node *data_node(wa_tree *t, wa_node *p, const char *tag,
     n->data = data;
     n->data_len = len;
   }
+  return n;
+}
+static wa_node *text_node(wa_tree *t, wa_node *parent, const char *tag, const char *value) {
+  wa_node *n=data_node(t,parent,tag,(const uint8_t*)value,strlen(value));
+  if(n)n->data_is_text=1;
   return n;
 }
 static int request_code(wa_pair_session *s) {
@@ -370,10 +379,9 @@ static int request_code(wa_pair_session *s) {
                 wrapped, 80) &&
       data_node(t, reg, "companion_server_auth_key_pub",
                 s->identity.noise_public, 32) &&
-      data_node(t, reg, "companion_platform_id", (const uint8_t *)"1", 1) &&
-      data_node(t, reg, "companion_platform_display",
-                (const uint8_t *)"Chrome (Linux)", 14) &&
-      data_node(t, reg, "link_code_pairing_nonce", (const uint8_t *)"0", 1) &&
+      text_node(t, reg, "companion_platform_id", "1") &&
+      text_node(t, reg, "companion_platform_display", "Chrome (Linux)") &&
+      text_node(t, reg, "link_code_pairing_nonce", "0") &&
       send_node(s, t);
 
   wa_tree_free(t);
@@ -381,11 +389,14 @@ static int request_code(wa_pair_session *s) {
   if (!ok)
     return fail(s, "No se pudo solicitar el codigo.");
 
-  s->state = 2;
-  trace(s,"PAIR_CODE_REQUEST_QUEUED waiting_for_iq_result");
+  /* The code is generated locally. The protocol sends companion_hello and
+   * returns the code without awaiting an IQ result (Baileys requestPairingCode).
+   * Kotlin exposes it only after WebSocket.send has accepted the queued frame. */
+  s->code_ready = 1;
+  s->state = 3;
+  trace(s,"PAIR_CODE_PREPARED waiting_for_primary_device; iq_result_not_required=yes");
   snprintf(s->status, sizeof s->status,
-           "Canal autenticado. Esperando la aceptacion de la solicitud de "
-           "codigo...");
+           "Codigo preparado. Introducelo en WhatsApp principal > Dispositivos vinculados > Vincular con numero. Aun no se confirma vinculacion.");
 
   return 1;
 }
@@ -397,7 +408,7 @@ static int handle_link(wa_pair_session *s, const wa_node *n) {
           *wrapped = wa_node_child(
               r, "link_code_pairing_wrapped_primary_ephemeral_pub");
 
-  if (s->state != 3 || !s->code_ack || !ref || !ref->data || !ref->data_len ||
+  if (s->state != 3 || !s->code_ready || !ref || !ref->data || !ref->data_len ||
       ref->data_len > 4096 || !pk || pk->data_len != 32 || !wrapped ||
       wrapped->data_len != 80)
     return fail(s, "Respuesta de vinculacion incompleta o inesperada.");
@@ -598,13 +609,8 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
     if (!type || strcmp(type, "result"))
       return fail(s, "WhatsApp ha rechazado la solicitud de codigo.");
 
-    s->code_ack = 1;
-
-    s->state = 3;
-    trace(s,"PAIR_CODE_ACKNOWLEDGED code_visible=yes");
-    snprintf(s->status, sizeof s->status,
-             "Codigo aceptado por el servidor. Introducelo en WhatsApp > "
-             "Dispositivos vinculados > Vincular con numero.");
+    /* A result is optional: never regress a later pairing phase if it arrives late. */
+    trace(s,"PAIR_CODE_IQ_RESULT_RECEIVED optional_ack=yes");
 
     return 1;
   }
@@ -776,6 +782,10 @@ int wa_pair_feed(wa_pair_session *s, const uint8_t *bytes, size_t n) {
     return 0;
 
   trace(s,"RX_WEBSOCKET_BINARY bytes=%zu buffered=%zu",n,s->input_len);
+  /* Only a complete, otherwise unframed short message's two public header
+   * bytes are exposed. Never dump a ciphertext, protobuf or node payload. */
+  if(s->noise.transport && !s->input_len && n>0 && n<=2)
+    trace(s,"RX_SHORT_WS_HEADER bytes=%zu prefix=%02x%02x",n,bytes[0],n==2?bytes[1]:0);
   while (n) {
     size_t room = MAX_FRAME + 3 - s->input_len, z = n < room ? n : room;
 

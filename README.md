@@ -6,7 +6,16 @@ claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
 OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
 y de nombre del servidor, sin excepciones de confianza.
 
-## Versión 0.3-debug: registro de diagnóstico
+## Versión 0.4-debug: código sin espera de IQ
+
+Corrige la espera indefinida observada en el log de 0.3: el código es local y se
+muestra después de que WebSocket acepte el envío; no requiere una respuesta IQ.
+No se considera una vinculación completada hasta verificar la identidad y la
+confirmación final. Las cadenas, tokens y JID usan la codificación canónica del
+cliente de referencia. Se mantiene el ping WA cifrado y se desactiva el ping
+adicional del WebSocket. Los logs correlacionan solicitudes sin revelar sus IDs.
+
+## Registro de diagnóstico
 
 Incluye **Guardar log**, **Ver log** y **Copiar log**. Después de reproducir el fallo,
 guarda el TXT y adjúntalo al chat. El log conserva marcas de tiempo UTC, versión,
@@ -23,7 +32,7 @@ el runner, por lo que 0.2 no conservó su clave y requiere desinstalarla para pa
 ## Vinculación por código
 
 Introduce tu número internacional sin `+` y pulsa **Solicitar código**. El código
-se muestra solo después de que el servidor acepte la solicitud. En WhatsApp
+se prepara localmente y se muestra al enviar la solicitud, sin esperar un IQ result. En WhatsApp
 principal abre **Dispositivos vinculados → Vincular dispositivo → Vincular con
 número de teléfono** e introduce el código.
 

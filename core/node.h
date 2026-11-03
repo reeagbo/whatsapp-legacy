@@ -14,6 +14,7 @@ typedef struct wa_node {
   size_t attr_count;
   const uint8_t *data;
   size_t data_len;
+  int data_is_text; /* token/string content rather than opaque binary bytes */
   struct wa_node *child, *next;
 } wa_node;
 typedef struct {

@@ -301,6 +301,7 @@ static wa_node *node(reader *r, wa_node *parent, unsigned depth) {
       }
       n->data = (const uint8_t *)v;
       n->data_len = strlen(v);
+      n->data_is_text = 1;
     }
   }
   return n;
@@ -378,16 +379,37 @@ static void blob(writer *w, const uint8_t *v, size_t n) {
   w->n += n;
 }
 static void text(writer *w, const char *v) {
-  if (!v) {
-    w->ok = 0;
+  if (!v) { w->ok=0; return; }
+  for(unsigned j=1;j<sizeof single_tokens/sizeof single_tokens[0];j++)
+    if(!strcmp(v,single_tokens[j])){put(w,j);return;}
+  for(unsigned d=0;d<4;d++)for(unsigned j=0;j<256;j++)
+    if(!strcmp(v,double_tokens[d][j])){put(w,236+d);put(w,j);return;}
+  size_t n=strlen(v);
+  int nibble=n>0&&n<=127,hex=nibble;
+  for(size_t j=0;j<n&&(nibble||hex);j++){
+    char c=v[j];if(!((c>='0'&&c<='9')||c=='-'||c=='.'))nibble=0;
+    if(!((c>='0'&&c<='9')||(c>='A'&&c<='F')))hex=0;
+  }
+  if(nibble||hex){
+    const char *alphabet=nibble?"0123456789-.":"0123456789ABCDEF";
+    put(w,nibble?255:251);put(w,(unsigned)((n+1)/2)|(n%2?128:0));
+    for(size_t j=0;j<n;j+=2){unsigned hi=(unsigned)(strchr(alphabet,v[j])-alphabet);
+      unsigned lo=j+1<n?(unsigned)(strchr(alphabet,v[j+1])-alphabet):15;
+      put(w,(hi<<4)|lo);}
     return;
   }
-  for (unsigned j = 1; j < sizeof single_tokens / sizeof single_tokens[0]; j++)
-    if (!strcmp(v, single_tokens[j])) {
-      put(w, j);
-      return;
+  const char *at=strchr(v,'@');
+  if(at&&at[1]&&!strchr(at+1,'@')&&(size_t)(at-v)<256){
+    char user[256];size_t size=(size_t)(at-v);memcpy(user,v,size);user[size]=0;
+    char *colon=strchr(user,':');
+    if(colon&&colon[1]){
+      char *end=NULL;unsigned long device=strtoul(colon+1,&end,10);
+      unsigned domain=!strcmp(at+1,"lid")?1:!strcmp(at+1,"hosted")?128:!strcmp(at+1,"hosted.lid")?129:0;
+      if(end&&!*end&&device<=255){*colon=0;put(w,247);put(w,domain);put(w,(unsigned)device);text(w,user);return;}
     }
-  blob(w, (const uint8_t *)v, strlen(v));
+    put(w,250);if(size)text(w,user);else put(w,0);text(w,at+1);return;
+  }
+  blob(w,(const uint8_t*)v,n);
 }
 static void start(writer *w, size_t n) {
   if (!n)
@@ -414,8 +436,13 @@ static void encode_node(writer *w, const wa_node *n, unsigned depth) {
     text(w, n->attrs[j].key);
     text(w, n->attrs[j].value);
   }
-  if (n->data)
-    blob(w, n->data, n->data_len);
+  if (n->data) {
+    if(n->data_is_text) {
+      if(n->data_len>65536||memchr(n->data,0,n->data_len)){w->ok=0;return;}
+      char *value=malloc(n->data_len+1);if(!value){w->ok=0;return;}
+      memcpy(value,n->data,n->data_len);value[n->data_len]=0;text(w,value);free(value);
+    } else blob(w, n->data, n->data_len);
+  }
 
   else if (n->child) {
     size_t count = 0;

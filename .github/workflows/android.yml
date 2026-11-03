@@ -64,7 +64,7 @@ jobs:
         run: gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
       - uses: actions/upload-artifact@v4
         with:
-          name: whatsapp-legacy-0.3-debug
+          name: whatsapp-legacy-0.4-debug
           path: app/build/outputs/apk/debug/whatsapp-legacy-*.apk
           if-no-files-found: error
           retention-days: 30

@@ -51,7 +51,7 @@ int main(void) {
   assert(wa_node_attr(root, "id", "test-pair"));
   assert(wa_node_attr(root, "type", "set"));
   assert(wa_node_add(t, root, "pair-device"));
-  assert(deliver(s, &server, t) && s->state == 2 && !*wa_pair_code(s));
+  assert(deliver(s, &server, t) && s->state == 3 && strlen(wa_pair_code(s)) == 8);
   wa_tree_free(t);
   t = drain(s, &server);
   wa_node *r = wa_node_child(t->root, "link_code_companion_reg");
@@ -63,10 +63,8 @@ int main(void) {
          wa_pairing_unwrap(s->code, wrapped->data, pub) &&
          !memcmp(pub, s->ephemeral_public, 32));
   wa_tree_free(t);
-  t = iq("result", "legacy-pair-1", NULL);
-  assert(deliver(s, &server, t) && s->state == 3 &&
-         strlen(wa_pair_code(s)) == 8);
-  wa_tree_free(t);
+  /* Regression: do not inject an IQ acknowledgement. A real primary must
+   * be able to use the code and respond while that optional result is absent. */
   uint8_t ep[32], epub[32], ip[32], ipub[32], wr[80];
   assert(wa_keypair(ep, epub) && wa_keypair(ip, ipub) &&
          wa_pairing_wrap(s->code, epub, wr));
@@ -82,6 +80,10 @@ int main(void) {
          data_node(t, r, "link_code_pairing_wrapped_primary_ephemeral_pub", wr,
                    80));
   assert(deliver(s, &server, t) && s->state == 2);
+  wa_tree_free(t);
+  /* Optional, late IQ results must not reveal the consumed code or regress state. */
+  t=iq("result","legacy-pair-1",NULL);
+  assert(deliver(s,&server,t)&&s->state==2&&!*wa_pair_code(s));
   wa_tree_free(t);
   /* Decrypt the outgoing bundle from the primary's side, independently. */
   size_t n = 0;
@@ -167,7 +169,7 @@ int main(void) {
   assert(deliver(s, &server, t) && s->state == 4 && !*wa_pair_code(s));
   wa_tree_free(t);
   const char *log = wa_pair_debug_log(s);
-  assert(strstr(log,"PAIR_CODE_ACKNOWLEDGED") && strstr(log,"PAIRING_CONFIRMED"));
+  assert(strstr(log,"PAIR_CODE_PREPARED") && strstr(log,"PAIRING_CONFIRMED"));
   assert(!strstr(log,"34123456789") && !strstr(log,s->code) && !strstr(log,path));
   wa_pair_debug_clear(s);
   assert(!*wa_pair_debug_log(s));
@@ -183,7 +185,7 @@ int main(void) {
   wa_pair_free(s);
   unlink(path);
   rmdir(dir);
-  puts("PASS: fragmented encrypted pairing flow, code acknowledgement, "
+  puts("PASS: fragmented encrypted pairing flow, code visibility without IQ acknowledgement, "
        "primary-side bundle decryption, rejected forged account HMAC, signed "
        "identity persistence and restart confirmation");
   return 0;

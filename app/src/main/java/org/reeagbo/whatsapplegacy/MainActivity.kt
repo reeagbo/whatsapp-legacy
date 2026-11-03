@@ -51,7 +51,7 @@ class MainActivity : Activity() {
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         .writeTimeout(20, TimeUnit.SECONDS)
-        .pingInterval(20, TimeUnit.SECONDS)
+        .pingInterval(0, TimeUnit.SECONDS) // Use the encrypted WA IQ heartbeat only.
         .build()
     private lateinit var output: TextView
     private lateinit var code: TextView
@@ -180,7 +180,7 @@ class MainActivity : Activity() {
             ws = tracedHttp.newWebSocket(
                 Request.Builder().url("wss://web.whatsapp.com/ws/chat")
                     .header("Origin", "https://web.whatsapp.com")
-                    .header("User-Agent", "WhatsAppLegacy/0.3-debug (experimental)")
+                    .header("User-Agent", "WhatsAppLegacy/$appVersion (experimental)")
                     .build(), this
             )
             deadline = timer.schedule({ synchronized(lock) {

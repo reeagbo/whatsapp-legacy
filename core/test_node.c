@@ -4,7 +4,36 @@
 #include <stdlib.h>
 #include <string.h>
 #include <zlib.h>
+#include "fixtures/pair_request.inc"
+static void reference_encoding(void) {
+  wa_tree *t=wa_tree_create();assert(t);
+  wa_node *iq=wa_node_add(t,NULL,"iq");
+  assert(wa_node_attr(iq,"to","@s.whatsapp.net")&&wa_node_attr(iq,"type","set")&&
+         wa_node_attr(iq,"id","legacy-pair-1")&&wa_node_attr(iq,"xmlns","md"));
+  wa_node *r=wa_node_add(t,iq,"link_code_companion_reg");assert(r);
+  assert(wa_node_attr(r,"jid","34123456789@s.whatsapp.net")&&wa_node_attr(r,"stage","companion_hello")&&
+         wa_node_attr(r,"should_show_push_notification","true"));
+  uint8_t wrapped[80],key[32];memset(wrapped,0x11,sizeof wrapped);memset(key,0x22,sizeof key);
+  wa_node *a=wa_node_add(t,r,"link_code_pairing_wrapped_companion_ephemeral_pub");assert(a);a->data=wrapped;a->data_len=sizeof wrapped;
+  a=wa_node_add(t,r,"companion_server_auth_key_pub");assert(a);a->data=key;a->data_len=sizeof key;
+  const char *tags[]={"companion_platform_id","companion_platform_display","link_code_pairing_nonce"};
+  const char *values[]={"1","Chrome (Linux)","0"};
+  for(size_t j=0;j<3;j++){a=wa_node_add(t,r,tags[j]);assert(a);a->data=(const uint8_t*)values[j];a->data_len=strlen(values[j]);a->data_is_text=1;}
+  uint8_t out[2048];size_t n=0;
+  assert(wa_node_encode(iq,out,sizeof out,&n)&&n==sizeof pair_request_fixture&&!memcmp(out,pair_request_fixture,n));
+  wa_tree *decoded=wa_node_decode(pair_request_fixture,sizeof pair_request_fixture);assert(decoded);
+  assert(!strcmp(wa_node_get(decoded->root,"to"),"@s.whatsapp.net"));
+  assert(!strcmp(wa_node_get(wa_node_child(decoded->root,"link_code_companion_reg"),"jid"),"34123456789@s.whatsapp.net"));
+  wa_tree_free(decoded);wa_tree_free(t);
+  t=wa_tree_create();assert(t);iq=wa_node_add(t,NULL,"iq");
+  assert(wa_node_attr(iq,"to","34123456789:2@s.whatsapp.net")&&wa_node_attr(iq,"type","get")&&wa_node_attr(iq,"id","A1B2"));
+  assert(wa_node_encode(iq,out,sizeof out,&n)&&n==sizeof device_jid_fixture&&!memcmp(out,device_jid_fixture,n));
+  decoded=wa_node_decode(device_jid_fixture,sizeof device_jid_fixture);assert(decoded);
+  assert(!strcmp(wa_node_get(decoded->root,"to"),"34123456789:2@s.whatsapp.net"));
+  wa_tree_free(decoded);wa_tree_free(t);
+}
 int main(void) {
+  reference_encoding();
   wa_tree *t = wa_tree_create();
   assert(t);
   wa_node *iq = wa_node_add(t, NULL, "iq"),
