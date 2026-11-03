@@ -48,8 +48,14 @@ jobs:
       - name: Preserve development APK signing key
         uses: actions/cache@v4
         with:
-          path: ~/.android/debug.keystore
-          key: whatsapp-legacy-development-signing-v1
+          path: .signing/debug.keystore
+          key: whatsapp-legacy-development-signing-v2
+      - name: Create development key only when cache has none
+        run: |
+          if [ ! -f .signing/debug.keystore ]; then
+            mkdir -p .signing
+            keytool -genkeypair -keystore .signing/debug.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" -noprompt
+          fi
       - name: Build OpenSSL and prepare Signal sources
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018

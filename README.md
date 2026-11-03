@@ -16,8 +16,9 @@ No registra teléfonos, códigos, JID, claves, certificados, cabeceras ni paquet
 Los eventos nativos usan listas de nombres permitidos y hay pruebas de redacción,
 recorte, reapertura y exportación en memoria si falla el almacenamiento.
 
-El APK incorpora la versión en su nombre. Comparte la firma de desarrollo de 0.2
-si la caché de Actions sigue disponible, para actualizar conservando la sesión.
+El APK incorpora la versión en su nombre. La firma usa una ruta explícita `.signing/debug.keystore`
+y Actions conserva ese archivo en caché. La ruta de caché anterior no existía en
+el runner, por lo que 0.2 no conservó su clave y requiere desinstalarla para pasar a 0.3.
 
 ## Vinculación por código
 

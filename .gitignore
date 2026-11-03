@@ -20,3 +20,4 @@ core/test_node
 core/test_pairing
 core/core
 identity.v1
+.signing/
