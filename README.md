@@ -6,7 +6,7 @@ claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
 OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
 y de nombre del servidor, sin excepciones de confianza.
 
-## Cambios guardados después de 0.8 (sin nueva APK)
+## Versión 0.9-debug: contactos y reconexión
 
 La 0.8 real recibió tres textos y tres copias de otros dispositivos en el log
 aportado el 3 de noviembre, con seis entregas confirmadas a SQLite. Esa sesión
@@ -14,7 +14,7 @@ no contiene errores de Signal; el error «Frame demasiado grande» anterior al
 marcador `APP_OPEN version=0.8-debug` corresponde a una ejecución previa.
 El usuario confirma recepción de mensajes y aparición de conversaciones.
 
-Cambios de fuente pendientes de compilar por petición expresa:
+Cambios incluidos en la versión solicitada:
 
 - Reconexión cuando Android anuncia que vuelve la red, aunque se hayan agotado
   los tres reintentos. Una desconexión manual o un error de almacenamiento
@@ -39,7 +39,7 @@ Cambios de fuente pendientes de compilar por petición expresa:
 Comprobación sin compilación: `python scripts/check-storage-sql.py` ejecuta el SQL
 literal de migraciones v1/v2→v3, cierre/reapertura, rollback en cada paso de la
 unión, duplicados por dirección, nombres y confirmaciones. Pasó localmente.
-Las pruebas C/JVM y el emulador ampliados están escritos, sin ejecutar todavía.
+Las pruebas C/JVM y el emulador ampliados se ejecutan en la compilación de la 0.9.
 
 Pendiente en móvil con la próxima versión solicitada: cerrar/abrir conservando
 sesión y mensajes; cortar/restaurar Wi-Fi y datos; desconectar manualmente y
@@ -106,7 +106,7 @@ considerar que Android borrará sus claves privadas.
 Solo por petición expresa del usuario se inicia manualmente
 `.github/workflows/android.yml` mediante `workflow_dispatch`: pruebas C99, sonda online sin
 número de teléfono (diagnóstica, no bloqueante), compilación y Android Lint.
-Descarga el artefacto con versión `whatsapp-legacy-0.8-debug` de la ejecución correcta.
+Descarga el artefacto con versión `whatsapp-legacy-0.9-debug` de la ejecución correcta.
 
 Para pruebas locales: `bash core/build.sh`. Requiere CMake, compilador C99,
 OpenSSL y zlib de desarrollo. Para la sonda online sin cuenta: `core/wa_probe`.
