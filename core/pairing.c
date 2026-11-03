@@ -32,7 +32,7 @@ struct wa_pair_session {
   struct {
     uint8_t *data;
     size_t len;
-  } output[8];
+  } output[128];
   size_t output_count;
 
   wa_messenger *messenger;
@@ -232,7 +232,9 @@ void wa_pair_free(wa_pair_session *s) {
 }
 static int queue_raw(wa_pair_session *s, const uint8_t *data, size_t n,
                      int intro) {
-  if (s->output_count == 8 || n > MAX_FRAME)
+  size_t queued=0;
+  for(size_t j=0;j<s->output_count;j++)queued+=s->output[j].len;
+  if (s->output_count >= sizeof s->output/sizeof *s->output || n > MAX_FRAME || queued > 2*MAX_FRAME-n-7)
     return fail(s, "Limite de salida excedido.");
 
   uint8_t *out = malloc(n + 7);
@@ -320,6 +322,11 @@ int wa_pair_send_text(wa_pair_session *s,const char *jid,const char *id,const ui
   if(!s||s->state!=5||!s->messenger)return 0;
   int ok=wa_messenger_send(s->messenger,jid,id,text,n);
   trace(s,"MESSAGE_SEND_REQUEST accepted=%d text_bytes=%zu",ok,n);
+  return ok;
+}
+int wa_pair_stored(wa_pair_session *s,const char *id,const char *jid,int outgoing) {
+  int ok=s&&wa_messenger_stored(s->messenger,id,jid,outgoing);
+  if(s)trace(s,"INBOX_DATABASE_COMMIT confirmed=%d",ok);
   return ok;
 }
 void wa_pair_tick(wa_pair_session *s,uint64_t now) { if(s&&s->messenger)wa_messenger_tick(s->messenger,now); }
@@ -649,7 +656,7 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
     int ok=wa_messenger_node(s->messenger,n);
     trace(s,"MESSAGING_IQ_HANDLED ok=%d",ok);
     /* An application-level error consumes the authenticated transport frame. */
-    return ok<0?fail(s,"Cola de mensajes llena. Reconecta para recuperar pendientes."):1;
+    return ok<0?fail(s,"Recepcion detenida para conservar mensajes. Revisa el almacenamiento y reconecta."):1;
   }
   if (!strcmp(n->tag, "iq") && type && !strcmp(type, "error")) {
     const wa_node *e = wa_node_child(n, "error");
@@ -708,7 +715,7 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
   if(s->state==5 && s->messenger) {
     int ok=wa_messenger_node(s->messenger,n);
     trace(s,"MESSAGING_NODE_HANDLED ok=%d",ok);
-    return ok<0?fail(s,"Cola de mensajes llena. Reconecta para recuperar pendientes."):1;
+    return ok<0?fail(s,"Recepcion detenida para conservar mensajes. Revisa el almacenamiento y reconecta."):1;
   }
   return 1;
 }

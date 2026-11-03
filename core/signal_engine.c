@@ -92,11 +92,22 @@ int wa_signal_encrypt(wa_signal *s,const char *jid,const uint8_t *p,size_t n,uin
  if(r>=0){signal_buffer *b=ciphertext_message_get_serialized(m);*len=signal_buffer_len(b);if(*len>cap)r=SG_ERR_NOMEM;else{memcpy(out,signal_buffer_data(b),*len);*pk=ciphertext_message_get_type(m)==CIPHERTEXT_PREKEY_TYPE;}}
  if(m)SIGNAL_UNREF(m);session_cipher_free(c);return r;
 }
-int wa_signal_decrypt(wa_signal *s,const char *jid,int pk,const uint8_t *p,size_t n,uint8_t *out,size_t cap,size_t *len){
+typedef struct { wa_signal_plaintext_callback callback; void *user; } plaintext_callback;
+static int plaintext_before_commit(session_cipher *cipher,signal_buffer *plain,void *context) {
+ (void)cipher;plaintext_callback *cb=context;
+ return cb&&cb->callback?cb->callback(cb->user,signal_buffer_const_data(plain),signal_buffer_len(plain)):0;
+}
+int wa_signal_decrypt_with_callback(wa_signal *s,const char *jid,int pk,const uint8_t *p,size_t n,uint8_t *out,size_t cap,size_t *len,wa_signal_plaintext_callback callback,void *user){
  signal_protocol_address a;char name[96];if(!s||!address(jid,&a,name))return SG_ERR_INVAL;session_cipher *c=NULL;signal_buffer *plain=NULL;
+ plaintext_callback before={callback,user};
  int r=session_cipher_create(&c,s->store,&a,s->ctx);
- if(r>=0&&pk){pre_key_signal_message *m=NULL;r=pre_key_signal_message_deserialize(&m,p,n,s->ctx);if(r>=0)r=session_cipher_decrypt_pre_key_signal_message(c,m,NULL,&plain);if(m)SIGNAL_UNREF(m);}
- else if(r>=0){signal_message *m=NULL;r=signal_message_deserialize(&m,p,n,s->ctx);if(r>=0)r=session_cipher_decrypt_signal_message(c,m,NULL,&plain);if(m)SIGNAL_UNREF(m);}
+ if(r>=0&&callback)session_cipher_set_decryption_callback(c,plaintext_before_commit);
+ if(r>=0&&pk){pre_key_signal_message *m=NULL;r=pre_key_signal_message_deserialize(&m,p,n,s->ctx);if(r>=0)r=session_cipher_decrypt_pre_key_signal_message(c,m,&before,&plain);if(m)SIGNAL_UNREF(m);}
+ else if(r>=0){signal_message *m=NULL;r=signal_message_deserialize(&m,p,n,s->ctx);if(r>=0)r=session_cipher_decrypt_signal_message(c,m,&before,&plain);if(m)SIGNAL_UNREF(m);}
  if(r>=0){*len=signal_buffer_len(plain);if(*len>cap)r=SG_ERR_NOMEM;else memcpy(out,signal_buffer_data(plain),*len);}
  signal_buffer_bzero_free(plain);session_cipher_free(c);return r;
+}
+
+int wa_signal_decrypt(wa_signal *s,const char *jid,int pk,const uint8_t *p,size_t n,uint8_t *out,size_t cap,size_t *len) {
+ return wa_signal_decrypt_with_callback(s,jid,pk,p,n,out,cap,len,NULL,NULL);
 }

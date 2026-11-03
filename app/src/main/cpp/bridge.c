@@ -163,3 +163,11 @@ JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeSe
  (*env)->ReleaseStringUTFChars(env,jid,j);(*env)->ReleaseStringUTFChars(env,id,i);return ok?JNI_TRUE:JNI_FALSE;
 }
 JNIEXPORT void JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeTick(JNIEnv *env,jobject self,jlong h,jlong now){(void)env;(void)self;if(now>=0)wa_pair_tick(session(h),(uint64_t)now);}
+
+JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeStored(JNIEnv *env,jobject self,jlong h,jstring id,jstring jid,jboolean outgoing) {
+ (void)self;if(!h||!id||!jid)return JNI_FALSE;
+ const char *i=(*env)->GetStringUTFChars(env,id,NULL);if(!i)return JNI_FALSE;
+ const char *j=(*env)->GetStringUTFChars(env,jid,NULL);if(!j){(*env)->ReleaseStringUTFChars(env,id,i);return JNI_FALSE;}
+ int ok=wa_pair_stored(session(h),i,j,outgoing==JNI_TRUE);
+ (*env)->ReleaseStringUTFChars(env,jid,j);(*env)->ReleaseStringUTFChars(env,id,i);return ok?JNI_TRUE:JNI_FALSE;
+}

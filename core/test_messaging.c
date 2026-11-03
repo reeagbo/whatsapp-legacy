@@ -21,6 +21,9 @@ static void bundle(wa_tree *t,wa_node *list,const char *jid,wa_identity *id,wa_s
 }
 static void clear_events(wa_messenger *m){while(wa_messenger_event(m))wa_messenger_event_done(m);}
 static void cleanup(const char *path){DIR *d=opendir(path);assert(d);struct dirent *e;while((e=readdir(d))){if(e->d_name[0]=='.')continue;char file[1024];snprintf(file,sizeof file,"%s/%s",path,e->d_name);assert(!unlink(file));}closedir(d);assert(!rmdir(path));}
+static int reject_plaintext(void *user,const uint8_t *plain,size_t n) {
+ int *called=user;assert(plain&&n);(*called)++;return WA_INBOX_STORAGE_ERROR;
+}
 int main(void){
  char dir[]="/tmp/wa-messages-XXXXXX";assert(mkdtemp(dir));char pa[256],pbdir[256],pp[256];snprintf(pa,sizeof pa,"%s/a",dir);snprintf(pbdir,sizeof pbdir,"%s/b",dir);snprintf(pp,sizeof pp,"%s/p",dir);
  wa_storage a,b,p;assert(wa_storage_posix(&a,pa)&&wa_storage_posix(&b,pbdir)&&wa_storage_posix(&p,pp));wa_identity ai,bi,pi;assert(wa_identity_generate(&ai)&&wa_identity_generate(&bi)&&wa_identity_generate(&pi));
@@ -39,6 +42,7 @@ int main(void){
  for(wa_node *to=participants->child;to;to=to->next){const char *jid=wa_node_get(to,"jid");wa_node *enc=wa_node_child(to,"enc");assert(!strcmp(wa_node_get(enc,"type"),"pkmsg"));uint8_t plain[8192];size_t n=0;
   int isown=strstr(jid,"11111111")!=NULL;
   if(!isown){uint8_t broken[8192];assert(enc->data_len<sizeof broken);memcpy(broken,enc->data,enc->data_len);broken[enc->data_len-1]^=1;assert(wa_signal_decrypt(bob,"11111111:1@lid",1,broken,enc->data_len,plain,sizeof plain,&n)<0);}
+  if(!isown){int called=0;assert(wa_signal_decrypt_with_callback(bob,"11111111:1@lid",1,enc->data,enc->data_len,plain,sizeof plain,&n,reject_plaintext,&called)==WA_INBOX_STORAGE_ERROR&&called==1);}
   assert(wa_signal_decrypt(isown?primary:bob,"11111111:1@lid",1,enc->data,enc->data_len,plain,sizeof plain,&n)>=0);
   char text[WA_TEXT_MAX+1],dest[128]="";int own=0;unsigned pad=plain[n-1];assert(pad&&pad<=16);assert(decode_text(plain,n-pad,text,dest,&own,0)&&!strcmp(text,(const char*)message)&&own==isown);if(own)assert(!strcmp(dest,"34222222222@s.whatsapp.net"));decrypted++;
  }assert(decrypted==2);wa_tree_free(t);
@@ -49,6 +53,16 @@ int main(void){
  uint8_t ct[4096];size_t cn=0;int pk=0;assert(wa_signal_encrypt(bob,"11111111:1@lid",encoded,en,ct,sizeof ct,&cn,&pk)>=0&&!pk);
  t=wa_tree_create();wa_node *root=wa_node_add(t,NULL,"message");assert(wa_node_attr(root,"id","incoming-test")&&wa_node_attr(root,"from","22222222:0@lid"));wa_node *enc=data(t,root,"enc",ct,cn);assert(enc&&wa_node_attr(enc,"type","msg"));assert(wa_messenger_node(m,root));
  const wa_message_event *e=wa_messenger_event(m);assert(e&&!strcmp(e->kind,"message")&&!strcmp(e->text,(const char*)reply)&&!strcmp(e->jid,"34222222222@s.whatsapp.net"));wa_tree_free(t);clear_events(m);
+ /* Process death after delivery to JNI but before SQLite commit must replay.
+  * The inbox is released only by the application's explicit durable receipt. */
+ wa_messenger_free(m);m=wa_messenger_create(&ai,&a,"11111111:1@lid",capture_node,&c);assert(m&&wa_messenger_start(m));
+ e=wa_messenger_event(m);assert(e&&!strcmp(e->id,"incoming-test")&&!strcmp(e->text,(const char*)reply));clear_events(m);
+ assert(wa_messenger_stored(m,"incoming-test","34222222222@s.whatsapp.net",0));
+ wa_messenger_free(m);m=wa_messenger_create(&ai,&a,"11111111:1@lid",capture_node,&c);assert(m&&wa_messenger_start(m)&&!wa_messenger_event(m));
+ /* Re-delivery of the already committed ciphertext is not an error alert. */
+ t=wa_tree_create();root=wa_node_add(t,NULL,"message");assert(wa_node_attr(root,"id","incoming-test")&&wa_node_attr(root,"from","22222222:0@lid"));
+ enc=data(t,root,"enc",ct,cn);assert(enc&&wa_node_attr(enc,"type","msg"));assert(wa_messenger_node(m,root));
+ e=wa_messenger_event(m);assert(e&&!strcmp(e->kind,"duplicate"));wa_tree_free(t);clear_events(m);
  /* Regression for actual 30/61 KiB startup payloads: decrypt a large
   * non-text protobuf without a Signal warning, then receive ordinary text on
   * the same ratchet. No history-sync implementation is implied by ignoring it. */
@@ -69,7 +83,9 @@ int main(void){
  enc=data(t,root,"enc",ct,cn);assert(enc&&wa_node_attr(enc,"type",pk?"pkmsg":"msg"));assert(wa_messenger_node(m,root));
  e=wa_messenger_event(m);assert(e&&!strcmp(e->kind,"message")&&!strcmp(e->text,(const char*)reply));wa_tree_free(t);clear_events(m);
  /* Reordered receipts must remain distinguishable. UI persists monotonic state. */
- t=wa_tree_create();root=wa_node_add(t,NULL,"receipt");assert(wa_node_attr(root,"id",id)&&wa_node_attr(root,"from","22222222@lid")&&wa_node_attr(root,"type","read"));assert(wa_messenger_node(m,root));assert(wa_messenger_event(m)->state==4);wa_tree_free(t);clear_events(m);
+ t=wa_tree_create();root=wa_node_add(t,NULL,"receipt");assert(wa_node_attr(root,"id",id)&&wa_node_attr(root,"from","22222222@lid")&&wa_node_attr(root,"type","read"));assert(wa_messenger_node(m,root));assert(wa_messenger_event(m)->state==4&&!strcmp(wa_messenger_event(m)->jid,"34222222222@s.whatsapp.net"));wa_tree_free(t);clear_events(m);
+ t=wa_tree_create();root=wa_node_add(t,NULL,"receipt");assert(wa_node_attr(root,"id",id)&&wa_node_attr(root,"from","11111111@lid")&&wa_node_attr(root,"type","read-self"));
+ assert(wa_messenger_node(m,root)&&!wa_messenger_event(m));wa_tree_free(t);
  /* TOFU is pinned; no silent key replacement on a changed identity. */
  uint8_t pre[32];assert(wa_signal_prekey(primary,51,pre));assert(wa_signal_bundle(m->signal,"22222222:0@lid",pi.registration_id,pi.identity_public,1,pi.prekey_public,pi.prekey_signature,51,pre)==-1010);
  m->ready=1;assert(!wa_messenger_send(m,"bad@evil",id,message,sizeof message-1));uint8_t bad[]={0xc0,0x80};assert(!wa_messenger_send(m,"34222222222@s.whatsapp.net",id,bad,sizeof bad));

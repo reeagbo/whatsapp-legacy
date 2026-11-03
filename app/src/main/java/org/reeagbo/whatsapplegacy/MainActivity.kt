@@ -42,6 +42,7 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
+    private external fun nativeStored(handle: Long, id: String, jid: String, outgoing: Boolean): Boolean
     private external fun nativeEvent(handle: Long): Array<String>?
     private external fun nativeSend(handle: Long, jid: String, id: String, text: ByteArray): Boolean
     private external fun nativeTick(handle: Long, now: Long)
@@ -92,7 +93,7 @@ class MainActivity : Activity() {
     private var connected = false
     private var statusText = "Sin conexión"
     private var pendingMessage: String? = null
-    private var reconnects = 0
+    private val reconnectPolicy = ReconnectPolicy()
     private var sessionGeneration = 0
     @Suppress("DEPRECATION")
     private fun palette(id: Int) = resources.getColor(id)
@@ -197,22 +198,38 @@ class MainActivity : Activity() {
         if(bytes.size>4000){compose?.error="Máximo 4.000 bytes de texto por mensaje";return}
         val active=connection;if(!connected||active==null){Toast.makeText(this,"Conecta la sesión primero",Toast.LENGTH_SHORT).show();return}
         val id="3EB0"+UUID.randomUUID().toString().replace("-","").uppercase(Locale.ROOT)
-        store.append(id,jid,text,true,0);pendingMessage=id;compose?.text?.clear();refreshMessages();updateSend()
+        try { store.append(id,jid,text,true,0) } catch(error: Exception) { storageFailure(error);return }
+        pendingMessage=id;compose?.text?.clear();refreshMessages();updateSend()
         if(!active.send(jid,id,bytes)){store.status(id,-1,"No se pudo iniciar el envío");pendingMessage=null;refreshMessages();updateSend()}
     }
     private fun applyEvents(events: List<Array<String>>) {
+        try {
         for(e in events) {
             if(e.size!=5)continue;val state=e[4].toIntOrNull()?:0
             when(e[0]) {
-                "ready" -> { connected=true;statusText="Conectado · texto cifrado";reconnects=0 }
-                "status" -> { store.status(e[1],state,e[3]);if(e[1]==pendingMessage&&(state<0||state>=2))pendingMessage=null }
-                "message", "sent-copy" -> if(e[1].isNotBlank()&&e[2].isNotBlank()) { debugLog.hide(e[2].substringBefore('@'));store.append(e[1],e[2],e[3],e[0]=="sent-copy",state) }
+                "ready" -> { connected=true;statusText="Conectado · texto cifrado";reconnectPolicy.connected(SystemClock.elapsedRealtime()) }
+                "status" -> { val matched=store.status(e[1],state,e[3],e[2]);if(matched&&e[1]==pendingMessage&&(state<0||state>=2))pendingMessage=null }
+                "message", "sent-copy" -> if(e[1].isNotBlank()&&e[2].isNotBlank()) {
+                    debugLog.hide(e[2].substringBefore('@'))
+                    store.append(e[1],e[2],e[3],e[0]=="sent-copy",state)
+                    // The native inbox keeps the text until this SQLite commit succeeds.
+                    connection?.stored(e[1],e[2],e[0]=="sent-copy")
+                }
                 "notice" -> { statusText=e[3];if(state<0)Toast.makeText(this,e[3],Toast.LENGTH_LONG).show() }
             }
         }
         statusLabel.text=statusText
         if(conversation!=null)refreshMessages() else showList()
         updateSend()
+        } catch (error: Exception) { storageFailure(error) }
+    }
+    private fun storageFailure(error: Exception) {
+        debugLog.failure("MESSAGE_STORAGE_FAILED",error)
+        sessionGeneration++
+        reconnectPolicy.reset()
+        connection?.cancel();connection=null
+        connected=false;pendingMessage=null
+        render("No se pudieron guardar los mensajes. Revisa el espacio disponible y vuelve a conectar. Los recibidos pendientes se conservan.","",false)
     }
     private fun showSettings() {
         (settingsBody.parent as? ViewGroup)?.removeView(settingsBody)
@@ -240,9 +257,14 @@ class MainActivity : Activity() {
         val save=Button(this).apply { text="Guardar log";setOnClickListener { exportLog() } }
         val view=Button(this).apply { text="Ver log";setOnClickListener { AlertDialog.Builder(this@MainActivity).setTitle("Diagnóstico").setView(ScrollView(this@MainActivity).apply { addView(label(debugLog.snapshot(),12f).apply { setTextIsSelectable(true) }) }).setPositiveButton("Cerrar",null).show() } }
         settingsBody.addView(save);settingsBody.addView(view)
-        pair.setOnClickListener { val phone=number.text.toString().trim();if(!phone.matches(Regex("^[1-9][0-9]{7,14}$")))number.error="Usa el prefijo de país y entre 8 y 15 dígitos" else start(phone) }
-        check.setOnClickListener { reconnects=0;start("") }
-        stop.setOnClickListener { sessionGeneration++;connection?.cancel();connection=null;connected=false;pendingMessage=null;store.interrupted();render("Desconectado. Las claves se conservan.","",false);updateSend() }
+        pair.setOnClickListener { val phone=number.text.toString().trim();if(!phone.matches(Regex("^[1-9][0-9]{7,14}$")))number.error="Usa el prefijo de país y entre 8 y 15 dígitos" else { reconnectPolicy.reset();start(phone) } }
+        check.setOnClickListener { reconnectPolicy.reset();start("") }
+        stop.setOnClickListener {
+            sessionGeneration++;reconnectPolicy.reset();connection?.cancel();connection=null
+            connected=false;pendingMessage=null
+            try { store.interrupted();render("Desconectado. Las claves se conservan.","",false);updateSend() }
+            catch(error: Exception) { storageFailure(error) }
+        }
         showList();render("Sin conexión · abre ⋮ para vincular", "",false)
         if(File(filesDir,"identity.v1").exists())start("")
     }
@@ -284,6 +306,13 @@ class MainActivity : Activity() {
         private var lastState: Int? = null
         private var authenticated = false
         private var lastIncoming = SystemClock.elapsedRealtime()
+        fun stored(id: String, jid: String, outgoing: Boolean) = synchronized(lock) {
+            if(!finished&&handle!=0L) {
+                val ok=nativeStored(handle,id,jid,outgoing)
+                log("INBOX_DATABASE_HANDOFF confirmed=$ok")
+                drainNative()
+            }
+        }
         fun send(jid: String, id: String, text: ByteArray): Boolean = synchronized(lock) {
             if(finished || handle==0L)return@synchronized false
             nativeTick(handle,SystemClock.elapsedRealtime())
@@ -323,7 +352,7 @@ class MainActivity : Activity() {
                     .build(), this
             )
             deadline = timer.schedule({ synchronized(lock) {
-                if (!finished) { log("DEADLINE_EXPIRED"); finish("Tiempo de vinculación agotado. Solicita otro código. Las claves se conservan.") }
+                if (!finished) { log("DEADLINE_EXPIRED"); finish("Tiempo de conexión agotado. Las claves se conservan.",retryNetwork=phone.isEmpty()) }
             } }, 180, TimeUnit.SECONDS)
         }
 
@@ -338,7 +367,7 @@ class MainActivity : Activity() {
             if (!finished) heartbeat = timer.scheduleAtFixedRate({ synchronized(lock) {
                 if (!finished && handle != 0L) {
                     val now=SystemClock.elapsedRealtime()
-                    if(now-lastIncoming>75000)finish("WhatsApp no responde. Reconectando…",retryNetwork=authenticated)
+                    if(now-lastIncoming>75000)finish("WhatsApp no responde. Reconectando…",retryNetwork=authenticated||phone.isEmpty())
                     else { nativeTick(handle,now);nativePing(handle);flush(webSocket);publish() }
                 }
             } }, 15, 15, TimeUnit.SECONDS)
@@ -398,14 +427,14 @@ class MainActivity : Activity() {
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) = synchronized(lock) {
             log("WEBSOCKET_CLOSING close_code=$code")
             webSocket.close(code, null)
-            if (!finished) finish("WhatsApp ha cerrado la conexión.",retryNetwork=authenticated)
+            if (!finished) finish("WhatsApp ha cerrado la conexión.",retryNetwork=authenticated||phone.isEmpty())
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = synchronized(lock) {
             if (finished) { log("WEBSOCKET_CLOSED_AFTER_ATTEMPT"); return@synchronized }
             log("WEBSOCKET_FAILURE http=${response?.code ?: "none"}")
             debugLog.failure("A$attempt NETWORK", t)
-            if (!finished) finish("Conexión interrumpida. Las claves se conservan.", retryNetwork=authenticated)
+            if (!finished) finish("Conexión interrumpida. Las claves se conservan.", retryNetwork=authenticated||phone.isEmpty())
         }
 
         private fun finish(status: String, reconnect: Boolean = false, retryNetwork: Boolean = false) {
@@ -426,11 +455,12 @@ class MainActivity : Activity() {
                         connection = null
                         connected=false
                         pendingMessage=null
-                        store.interrupted()
+                        try { store.interrupted() } catch(error: Exception) { storageFailure(error);return@post }
                         render(status, "", false)
-                        if(retryNetwork && reconnects<3) {
-                            val delay=(2000L shl reconnects++)
+                        val delay=if(retryNetwork)reconnectPolicy.nextDelay(SystemClock.elapsedRealtime()) else null
+                        if(delay!=null) {
                             val generation=sessionGeneration
+                            log("RECONNECT_SCHEDULED delay_ms=$delay")
                             handler.postDelayed({ if(connection==null&&!destroyed&&generation==sessionGeneration)start("") },delay)
                         }
                     }

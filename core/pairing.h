@@ -10,6 +10,7 @@ typedef struct wa_pair_session wa_pair_session;
 wa_pair_session *wa_pair_create(const char *credentials_path,
                                 const char *phone);
 int wa_pair_send_text(wa_pair_session *,const char *jid,const char *id,const uint8_t *utf8,size_t);
+int wa_pair_stored(wa_pair_session *,const char *id,const char *jid,int outgoing);
 void wa_pair_tick(wa_pair_session *,uint64_t monotonic_ms);
 const wa_message_event *wa_pair_event(const wa_pair_session *);
 void wa_pair_event_done(wa_pair_session *);

@@ -137,3 +137,33 @@ Modo oscuro por defecto en la lista, chat, burbujas, compositor, formularios,
 diálogos y barras del sistema. Paleta centralizada en `res/values/colors.xml` y
 tema nativo compatible con Android 5.0. No se ha incrementado la versión ni
 compilado este cambio. Las compilaciones quedan exclusivamente bajo petición.
+
+
+## Recepción y estabilidad: cambios pendientes de validación
+
+Sin incrementar versión ni compilar, se prepara una bandeja de entrada durable
+(C99, almacenamiento por callbacks) para evitar la pérdida entre descifrado y
+SQLite. El texto soportado se escribe antes de confirmar el avance del ratchet
+Signal y antes de confirmar la recepción por red. La bandeja se recupera al
+reconectar y solo se limpia tras la confirmación explícita del commit de SQLite.
+El formato usa longitudes explícitas y checksum SHA-256, con hasta 32 entregas
+pendientes. Si falla el guardado o se llena, se detiene la recepción sin confirmar
+el mensaje afectado. El directorio privado y las escrituras atómicas pertenecen
+al adaptador, no al núcleo de mensajería.
+
+SQLite migra conservando mensajes a una clave (conversación, ID, dirección),
+permite redelivery idempotente y propaga errores de almacenamiento. No se baja
+un estado confirmado por eventos tardíos. Las confirmaciones de lectura propias
+no se interpretan como lectura del destinatario y los recibos se atribuyen a su
+conversación. Se amplía la cola acotada de respuestas para tolerar ráfagas.
+
+La reconexión limita los fallos a tres intentos (2/4/8 segundos), también si el
+fallo sucede durante el handshake; solo una conexión sana de 30 segundos repone
+el presupuesto. Desconectar manualmente cancela los reintentos pendientes.
+No se reenvían automáticamente mensajes de resultado incierto.
+
+Se han escrito pruebas de recuperación, fallo de almacenamiento, bloqueo del
+commit Signal al fallar el guardado, duplicados, recibos y reconexión. Esas
+pruebas C/Kotlin no se han compilado ni ejecutado por instrucción del usuario.
+Los cambios no incluyen recuperación del historial previo a la vinculación ni
+reintentos automáticos de descifrado con solicitud de nuevas claves.

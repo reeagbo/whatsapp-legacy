@@ -1,5 +1,6 @@
 #include "messaging.h"
 #include "signal_engine.h"
+#include "inbox.h"
 #include "wire.h"
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -10,7 +11,7 @@
 #define DEVICES 32
 #define EVENTS 64
 struct wa_messenger {
- wa_identity me;wa_storage io;wa_signal *signal;wa_send_node send;void *user;
+ wa_identity me;wa_storage io;wa_signal *signal;wa_inbox *inbox;int inbox_replayed;wa_send_node send;void *user;
  char own[128],lid[128];
  int ready,boot,pending,phase;uint64_t now,deadline;
  char peer[128],route[128],id[96],query[128];uint8_t text[WA_TEXT_MAX+1];size_t text_len;
@@ -61,11 +62,19 @@ static int upload(wa_messenger *m){
 }
 wa_messenger *wa_messenger_create(const wa_identity *id,const wa_storage *io,const char *lid,wa_send_node sender,void *u){
  if(!id||!io||!sender||!id->jid[0])return NULL;wa_messenger *m=calloc(1,sizeof *m);if(!m)return NULL;m->me=*id;m->io=*io;m->send=sender;m->user=u;
- if(!base(id->jid,m->own)||(lid&&*lid&&!base(lid,m->lid))||!(m->signal=wa_signal_create(id,io))){wa_messenger_free(m);return NULL;}
+ if(!base(id->jid,m->own)||(lid&&*lid&&!base(lid,m->lid))||!(m->inbox=wa_inbox_open(io))||!(m->signal=wa_signal_create(id,io))){wa_messenger_free(m);return NULL;}
  if(m->lid[0]&&!mapping(m,m->lid,m->own)){wa_messenger_free(m);return NULL;}return m;
 }
-void wa_messenger_free(wa_messenger *m){if(!m)return;wa_signal_free(m->signal);OPENSSL_cleanse(m,sizeof *m);free(m);}
-int wa_messenger_start(wa_messenger *m){if(!m)return 0;m->boot=1;m->deadline=m->now+45000;wa_tree *t=iq("get","legacy-prekeys-count","encrypt");if(!t||!wa_node_add(t,t->root,"count")){wa_tree_free(t);return 0;}return send(m,t);}
+void wa_messenger_free(wa_messenger *m){if(!m)return;wa_signal_free(m->signal);wa_inbox_free(m->inbox);OPENSSL_cleanse(m,sizeof *m);free(m);}
+int wa_messenger_start(wa_messenger *m){if(!m)return 0;
+ if(!m->inbox_replayed){
+  for(size_t j=0;j<wa_inbox_count(m->inbox);j++){
+   const wa_message_event *e=wa_inbox_at(m->inbox,j);
+   event(m,e->kind,e->id,e->jid,e->text,e->state);
+  }
+  m->inbox_replayed=1;
+ }
+ m->boot=1;m->deadline=m->now+45000;wa_tree *t=iq("get","legacy-prekeys-count","encrypt");if(!t||!wa_node_add(t,t->root,"count")){wa_tree_free(t);return 0;}return send(m,t);}
 static int discover(wa_messenger *m){
  snprintf(m->query,sizeof m->query,"%s-usync",m->id);wa_tree *t=iq("get",m->query,"usync");if(!t)return 0;
  wa_node *u=wa_node_add(t,t->root,"usync");int ok=u&&wa_node_attr(u,"context","message")&&wa_node_attr(u,"mode","query")&&wa_node_attr(u,"sid",m->query)&&wa_node_attr(u,"last","true")&&wa_node_attr(u,"index","0");
@@ -146,6 +155,29 @@ static int decode_text(const uint8_t *p,size_t n,char out[WA_TEXT_MAX+1],char de
  if(!wa_pb_bytes_field(p,n,1,&t)){if(!wa_pb_bytes_field(p,n,6,&v)||!wa_pb_bytes_field(v.ptr,v.len,1,&t))return 0;}
  if(!t.len||t.len>WA_TEXT_MAX||!utf8(t.ptr,t.len))return 0;memcpy(out,t.ptr,t.len);out[t.len]=0;return 1;
 }
+typedef struct {
+ wa_messenger *m;const char *id,*from;wa_message_event saved;int stored;
+} incoming_commit;
+static int save_before_ratchet(void *user,const uint8_t *plain,size_t n) {
+ incoming_commit *c=user;unsigned pad=n?plain[n-1]:0;
+ if(!pad||pad>16||pad>n)return 0;
+ for(unsigned j=0;j<pad;j++)if(plain[n-j-1]!=pad)return 0;
+ char text[WA_TEXT_MAX+1],dest[128]="",peer[128];int own=0;
+ if(!decode_text(plain,n-pad,text,dest,&own,0))return 0;
+ if(own){
+  /* Only our own authenticated account can supply an outgoing-device copy. */
+  if(strcmp(c->from,c->m->own)&&(!c->m->lid[0]||strcmp(c->from,c->m->lid)))return 0;
+  if(!base(dest,peer))return 0;
+ }
+ else if(!mapped(c->m,c->from,peer)||!strstr(peer,"@s.whatsapp.net"))copy(peer,sizeof peer,c->from);
+ wa_message_event *e=&c->saved;memset(e,0,sizeof *e);
+ if(!copy(e->kind,sizeof e->kind,own?"sent-copy":"message")||
+    !copy(e->id,sizeof e->id,c->id)||!copy(e->jid,sizeof e->jid,peer)||
+    !copy(e->text,sizeof e->text,text))return WA_INBOX_STORAGE_ERROR;
+ e->state=own?2:0;
+ if(!wa_inbox_add(c->m->inbox,e))return WA_INBOX_STORAGE_ERROR;
+ c->stored=1;return 0;
+}
 static int incoming(wa_messenger *m,const wa_node *node){
  /* Do not acknowledge/drop a decrypted text if the app event queue is full.
   * The transport adapter closes and the server may redeliver on reconnect. */
@@ -164,16 +196,30 @@ static int incoming(wa_messenger *m,const wa_node *node){
   if(!capacity||capacity>WA_NODE_BYTES){event(m,"notice",id,frombase,"Paquete recibido demasiado grande.",-1);continue;}
   uint8_t *plaintext=malloc(capacity);
   if(!plaintext){event(m,"notice",id,frombase,"Memoria insuficiente para procesar un mensaje recibido.",-12);continue;}
-  size_t n=0;int r=wa_signal_decrypt(m->signal,crypto,!strcmp(type,"pkmsg"),e->data,e->data_len,plaintext,capacity,&n);
-  if(r<0){event(m,"notice",id,frombase,r==-12?"Memoria insuficiente para procesar un mensaje recibido.":"No se pudo descifrar un mensaje (Signal).",r);OPENSSL_cleanse(plaintext,capacity);free(plaintext);continue;}
+  incoming_commit commit={0};commit.m=m;commit.id=id;commit.from=frombase;
+  size_t n=0;int r=wa_signal_decrypt_with_callback(m->signal,crypto,!strcmp(type,"pkmsg"),e->data,e->data_len,plaintext,capacity,&n,save_before_ratchet,&commit);
+  if(r<0){
+   OPENSSL_cleanse(plaintext,capacity);free(plaintext);
+   if(commit.stored){
+    wa_message_event *saved=&commit.saved;
+    event(m,saved->kind,saved->id,saved->jid,saved->text,saved->state);
+    event(m,"notice",id,frombase,"Texto conservado, pero no se pudo guardar la sesión Signal. Vuelve a conectar.",r);
+    return -1;
+   }
+   if(r==WA_INBOX_STORAGE_ERROR){
+    event(m,"notice",id,frombase,"No se pudo conservar un mensaje recibido. No se confirmó su recepción.",r);
+    return -1;
+   }
+   /* Signal identifies authenticated retransmissions separately from failures. */
+   if(r==-1001){event(m,"duplicate",id,frombase,"",0);continue;}
+   event(m,"notice",id,frombase,r==-12?"Memoria insuficiente para procesar un mensaje recibido.":"No se pudo descifrar un mensaje (Signal).",r);continue;
+  }
   unsigned pad=n?plaintext[n-1]:0;
   if(!pad||pad>16||pad>n){event(m,"bad-padding",id,frombase,"",0);OPENSSL_cleanse(plaintext,capacity);free(plaintext);continue;}
   int valid=1;for(unsigned j=0;j<pad;j++)if(plaintext[n-j-1]!=pad)valid=0;
-  char text[WA_TEXT_MAX+1],dest[128]="",peer[128];int own=0;
-  if(valid&&decode_text(plaintext,n-pad,text,dest,&own,0)){
-   if(own){if(!base(dest,peer)){OPENSSL_cleanse(plaintext,capacity);free(plaintext);continue;}}
-   else if(!mapped(m,frombase,peer)||!strstr(peer,"@s.whatsapp.net"))copy(peer,sizeof peer,frombase);
-   event(m,own?"sent-copy":"message",id,peer,text,own?2:0);got=1;
+  if(valid&&commit.stored){
+   wa_message_event *saved=&commit.saved;
+   event(m,saved->kind,saved->id,saved->jid,saved->text,saved->state);got=1;
   } else event(m,valid?"ignored-payload":"bad-padding",id,frombase,"",0);
   OPENSSL_cleanse(plaintext,capacity);free(plaintext);
  }
@@ -191,10 +237,15 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
   if(m->pending&&!strcmp(id,m->query)){if(!type||strcmp(type,"result"))return error(m,"WhatsApp rechazó la consulta de dispositivos o claves.");if(m->phase==1){int r=prepare_devices(m,node);return r==2?transmit(m):r;}if(m->phase==2)return bundles(m,node)?transmit(m):0;}
  }
  if(!strcmp(node->tag,"ack")&&id&&wa_node_get(node,"class")&&!strcmp(wa_node_get(node,"class"),"message")){
-  const char *code=wa_node_get(node,"error");event(m,"status",id,m->peer,code?"WhatsApp rechazó el mensaje":"Aceptado por el servidor",code?-1:2);if(m->pending&&!strcmp(id,m->id)){m->pending=0;m->phase=0;}return 1;
+  const char *code=wa_node_get(node,"error");event(m,"status",id,"",code?"WhatsApp rechazó el mensaje":"Aceptado por el servidor",code?-1:2);if(m->pending&&!strcmp(id,m->id)){m->pending=0;m->phase=0;}return 1;
  }
- if(!strcmp(node->tag,"receipt")){int state=type&&(!strcmp(type,"read")||!strcmp(type,"read-self"))?4:!type||!strcmp(type,"delivery")?3:0;
-  if(state&&id){event(m,"status",id,"","",state);wa_node *list=wa_node_child(node,"list");for(wa_node *item=list?list->child:NULL;item;item=item->next){const char *other=wa_node_get(item,"id");if(other)event(m,"status",other,"","",state);}}
+ if(!strcmp(node->tag,"receipt")){int state=type&&!strcmp(type,"read")?4:!type||!strcmp(type,"delivery")?3:0;
+  char peer[128],resolved[128];const char *from=wa_node_get(node,"from");
+  int known=base(from,peer);
+  if(known&&mapped(m,peer,resolved)&&strstr(resolved,"@s.whatsapp.net"))copy(peer,sizeof peer,resolved);
+  /* Attribute confirmations to their actual peer, never an own-device copy.
+   * read-self records our own reading and is not a recipient read receipt. */
+  if(state&&id&&known){event(m,"status",id,peer,"",state);wa_node *list=wa_node_child(node,"list");for(wa_node *item=list?list->child:NULL;item;item=item->next){const char *other=wa_node_get(item,"id");if(other)event(m,"status",other,peer,"",state);}}
   if(type&&!strcmp(type,"retry")&&id)event(m,"status",id,"","El destinatario pidió repetir el cifrado. Reintento automático pendiente.",-1);
   return ack(m,node,"receipt");
  }
@@ -209,3 +260,7 @@ void wa_messenger_tick(wa_messenger *m,uint64_t now){if(!m)return;int first=m->n
 }
 const wa_message_event *wa_messenger_event(const wa_messenger *m){return m&&m->event_count?m->events:NULL;}
 void wa_messenger_event_done(wa_messenger *m){if(!m||!m->event_count)return;OPENSSL_cleanse(m->events,sizeof *m->events);m->event_count--;memmove(m->events,m->events+1,m->event_count*sizeof *m->events);}
+
+int wa_messenger_stored(wa_messenger *m,const char *id,const char *jid,int outgoing) {
+ return m&&wa_inbox_confirm(m->inbox,id,jid,outgoing);
+}

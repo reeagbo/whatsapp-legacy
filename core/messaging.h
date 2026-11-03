@@ -16,4 +16,6 @@ int wa_messenger_send(wa_messenger *,const char *jid,const char *id,const uint8_
 void wa_messenger_tick(wa_messenger *,uint64_t now_ms);
 const wa_message_event *wa_messenger_event(const wa_messenger *);
 void wa_messenger_event_done(wa_messenger *);
+/* App calls only after its message database transaction has committed. */
+int wa_messenger_stored(wa_messenger *,const char *id,const char *jid,int outgoing);
 #endif
