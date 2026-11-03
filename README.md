@@ -38,10 +38,10 @@ los logs anteriores. Actions permanece manual; la 0.10 se compila por petición 
   confirmar a qué dirección corresponde esa terminación ni probar una atribución
   errónea concreta. Hace falta distinguir un teléfono con + de un LID con ….
 
-Se mantienen la versión 0.9 y Actions manual. No se ejecutan comprobaciones que
-compilen hasta la siguiente petición expresa de una versión. La prueba de UI
-concede el permiso al emulador; la solicitud, denegación y revocación quedan para
-comprobación con la siguiente APK.
+La versión 0.10 se compila por petición expresa; Actions sigue manual.
+La prueba de UI abre la solicitud automática de agenda y concede el permiso
+mediante el diálogo Android. La denegación y revocación quedan para prueba en
+móvil, junto con la identificación de la conversación terminada en 187136.
 
 ## Versión 0.9-debug: contactos y reconexión
 
