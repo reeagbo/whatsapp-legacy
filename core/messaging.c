@@ -147,6 +147,9 @@ static int decode_text(const uint8_t *p,size_t n,char out[WA_TEXT_MAX+1],char de
  if(!t.len||t.len>WA_TEXT_MAX||!utf8(t.ptr,t.len))return 0;memcpy(out,t.ptr,t.len);out[t.len]=0;return 1;
 }
 static int incoming(wa_messenger *m,const wa_node *node){
+ /* Do not acknowledge/drop a decrypted text if the app event queue is full.
+  * The transport adapter closes and the server may redeliver on reconnect. */
+ if(m->event_count>EVENTS-4)return -1;
  const char *from=wa_node_get(node,"from"),*id=wa_node_get(node,"id");char frombase[128];
  if(!id||!base(from,frombase))return ack(m,node,"message");
  const char *sender=wa_node_get(node,"participant");if(!sender)sender=from;
@@ -190,9 +193,9 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
  return 1;
  boot_error:m->boot=0;event(m,"notice","","","No se pudieron preparar las claves de mensajería. Vuelve a conectar.",-1);return 0;
 }
-void wa_messenger_tick(wa_messenger *m,uint64_t now){if(!m)return;uint64_t delta=m->now?now-m->now:0;m->now=now;
+void wa_messenger_tick(wa_messenger *m,uint64_t now){if(!m)return;int first=m->now==0;m->now=now;
  /* The first tick establishes the external monotonic clock origin. */
- if(!delta&&m->deadline&&m->deadline<now)m->deadline=now+45000;
+ if(first&&m->deadline)m->deadline+=now;
  if(m->deadline&&now>=m->deadline){m->deadline=0;if(m->pending){event(m,"status",m->id,m->peer,m->phase==3?"Sin confirmación; el envío podría haberse aceptado":"La consulta agotó el tiempo",m->phase==3?-2:-1);m->pending=0;m->phase=0;}if(m->boot){m->boot=0;event(m,"notice","","","Tiempo agotado al preparar la mensajería.",-1);}}
 }
 const wa_message_event *wa_messenger_event(const wa_messenger *m){return m&&m->event_count?m->events:NULL;}

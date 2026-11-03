@@ -324,7 +324,12 @@ int wa_pair_send_text(wa_pair_session *s,const char *jid,const char *id,const ui
 }
 void wa_pair_tick(wa_pair_session *s,uint64_t now) { if(s&&s->messenger)wa_messenger_tick(s->messenger,now); }
 const wa_message_event *wa_pair_event(const wa_pair_session *s) { return s?wa_messenger_event(s->messenger):NULL; }
-void wa_pair_event_done(wa_pair_session *s) { if(s)wa_messenger_event_done(s->messenger); }
+void wa_pair_event_done(wa_pair_session *s) {
+  if(s) { const wa_message_event *e=wa_messenger_event(s->messenger);
+    if(e)trace(s,"MESSAGING_EVENT kind=%s state=%d",e->kind,e->state);
+    wa_messenger_event_done(s->messenger);
+  }
+}
 
 static wa_tree *iq(const char *type, const char *id, const char *xmlns) {
   wa_tree *t = wa_tree_create();
@@ -643,7 +648,8 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
   if (s->state==5 && s->messenger && !strcmp(n->tag,"iq")) {
     int ok=wa_messenger_node(s->messenger,n);
     trace(s,"MESSAGING_IQ_HANDLED ok=%d",ok);
-    return ok;
+    /* An application-level error consumes the authenticated transport frame. */
+    return ok<0?fail(s,"Cola de mensajes llena. Reconecta para recuperar pendientes."):1;
   }
   if (!strcmp(n->tag, "iq") && type && !strcmp(type, "error")) {
     const wa_node *e = wa_node_child(n, "error");
@@ -702,7 +708,7 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
   if(s->state==5 && s->messenger) {
     int ok=wa_messenger_node(s->messenger,n);
     trace(s,"MESSAGING_NODE_HANDLED ok=%d",ok);
-    return ok;
+    return ok<0?fail(s,"Cola de mensajes llena. Reconecta para recuperar pendientes."):1;
   }
   return 1;
 }

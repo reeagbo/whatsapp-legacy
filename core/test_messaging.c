@@ -37,7 +37,9 @@ int main(void){
  t=captured(&c);assert(!strcmp(t->root->tag,"message")&&!strcmp(wa_node_get(t->root,"to"),"22222222@lid")&&wa_node_child(t->root,"device-identity"));
  wa_node *participants=wa_node_child(t->root,"participants");size_t decrypted=0;
  for(wa_node *to=participants->child;to;to=to->next){const char *jid=wa_node_get(to,"jid");wa_node *enc=wa_node_child(to,"enc");assert(!strcmp(wa_node_get(enc,"type"),"pkmsg"));uint8_t plain[8192];size_t n=0;
-  int isown=strstr(jid,"11111111")!=NULL;assert(wa_signal_decrypt(isown?primary:bob,"11111111:1@lid",1,enc->data,enc->data_len,plain,sizeof plain,&n)>=0);
+  int isown=strstr(jid,"11111111")!=NULL;
+  if(!isown){uint8_t broken[8192];assert(enc->data_len<sizeof broken);memcpy(broken,enc->data,enc->data_len);broken[enc->data_len-1]^=1;assert(wa_signal_decrypt(bob,"11111111:1@lid",1,broken,enc->data_len,plain,sizeof plain,&n)<0);}
+  assert(wa_signal_decrypt(isown?primary:bob,"11111111:1@lid",1,enc->data,enc->data_len,plain,sizeof plain,&n)>=0);
   char text[WA_TEXT_MAX+1],dest[128]="";int own=0;unsigned pad=plain[n-1];assert(pad&&pad<=16);assert(decode_text(plain,n-pad,text,dest,&own,0)&&!strcmp(text,(const char*)message)&&own==isown);if(own)assert(!strcmp(dest,"34222222222@s.whatsapp.net"));decrypted++;
  }assert(decrypted==2);wa_tree_free(t);
  t=wa_tree_create();wa_node *acknode=wa_node_add(t,NULL,"ack");assert(wa_node_attr(acknode,"id",id)&&wa_node_attr(acknode,"class","message"));assert(wa_messenger_node(m,t->root)&&!m->pending);wa_tree_free(t);clear_events(m);

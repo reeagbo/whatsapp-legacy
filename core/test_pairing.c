@@ -35,6 +35,12 @@ static wa_tree *drain(wa_pair_session *s, wa_noise *server) {
   }
   return last;
 }
+static int missing_get(void *u,const char *key,uint8_t *p,size_t cap,size_t *n) {
+  (void)u;(void)key;(void)p;(void)cap;*n=0;return 0;
+}
+static int successful_put(void *u,const char *key,const uint8_t *p,size_t n) {
+  (void)u;(void)key;(void)p;(void)n;return 1;
+}
 int main(void) {
   char dir[] = "/tmp/wa-pairing-XXXXXX", path[256];
   assert(mkdtemp(dir));
@@ -191,6 +197,17 @@ int main(void) {
   assert(wa_node_attr(root, "code", "515"));
   assert(deliver(s, &server, t) && s->state == 4 && !*wa_pair_code(s));
   wa_tree_free(t);
+  /* Regression: a rejected messaging IQ is an application error, not a
+   * transport frame to replay with the next Noise nonce. */
+  wa_storage ephemeral_store={NULL,missing_get,successful_put};
+  s->messenger=wa_messenger_create(&s->identity,&ephemeral_store,NULL,messenger_send,s);
+  assert(s->messenger);s->state=5;assert(wa_messenger_start(s->messenger));
+  wa_tree_free(drain(s,&server));
+  t=iq("error","legacy-prekeys-count",NULL);
+  assert(deliver(s,&server,t)&&s->state==5&&s->input_len==0);wa_tree_free(t);
+  t=iq("result","legacy-ping-regression",NULL);
+  assert(deliver(s,&server,t)&&s->state==5&&s->input_len==0);wa_tree_free(t);
+  assert(wa_pair_ping(s));wa_tree_free(drain(s,&server));
   const char *log = wa_pair_debug_log(s);
   assert(strstr(log,"PAIR_CODE_PREPARED") && strstr(log,"PAIRING_RESTART_REQUIRED"));
   assert(!strstr(log,"34123456789") && !strstr(log,s->code) && !strstr(log,path));
