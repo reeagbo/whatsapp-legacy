@@ -5,6 +5,8 @@ import android.content.BroadcastReceiver
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.net.Uri
+import android.provider.Settings
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -122,6 +124,7 @@ class MainActivity : Activity() {
     private val checkedContacts = mutableSetOf<String>()
     private var contactGeneration = 0
     private var chatTitle: TextView? = null
+    private var addressLabel: TextView? = null
     private val contactRequest = 302
     @Suppress("DEPRECATION")
     private fun networkAvailable() = (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).activeNetworkInfo?.isConnected == true
@@ -138,7 +141,7 @@ class MainActivity : Activity() {
     private fun shape(color: Int, radius: Int = 14) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
     private fun label(value: String, size: Float = 16f, color: Int = ink) = TextView(this).apply { text = value; textSize = size; setTextColor(color) }
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-    private fun display(jid: String) = if (jid.endsWith("@lid")) "Contacto · …" + jid.substringBefore('@').takeLast(6) else "+" + jid.substringBefore('@').substringBefore(':')
+    private fun display(jid: String) = if (jid.endsWith("@lid")) "…" + jid.substringBefore('@').takeLast(6) else "+" + jid.substringBefore('@').substringBefore(':')
     private fun contactName(chat: ChatStore.Chat) = chat.name.takeIf { it.isNotBlank() }
         ?: phoneNames[chat.jid] ?: chat.pushName.takeIf { it.isNotBlank() } ?: display(chat.jid)
     private fun title(jid: String) = store.chats().firstOrNull { it.jid == store.resolve(jid) }?.let { contactName(it) } ?: display(jid)
@@ -147,8 +150,17 @@ class MainActivity : Activity() {
         if (current == null) showList() else {
             conversation = store.resolve(current)
             chatTitle?.text = title(conversation!!)
+            updateAddressLabel()
             refreshMessages()
         }
+    }
+    private fun updateAddressLabel() {
+        val jid=conversation ?: return
+        addressLabel?.text=if(jid.endsWith("@lid")) "Número pendiente de identificar" else display(jid)
+        addressLabel?.visibility=if(jid.endsWith("@lid") || title(jid)!=display(jid)) View.VISIBLE else View.GONE
+    }
+    private fun openAgendaSettings() {
+        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
     }
     private fun editName(jid: String) {
         val value = EditText(this).apply { setSingleLine(true); hint="Nombre"; setText(store.chats().firstOrNull { it.jid==store.resolve(jid) }?.name.orEmpty()) }
@@ -182,14 +194,21 @@ class MainActivity : Activity() {
         }
     }
     private fun requestContactNames() {
-        if(Build.VERSION.SDK_INT>=23 && !phoneContacts.allowed()) requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS),contactRequest)
-        else scheduleContacts(true)
+        if(Build.VERSION.SDK_INT>=23 && !phoneContacts.allowed()) {
+            // Integration is always enabled; Android still requires its own consent.
+            getSharedPreferences("permissions",Context.MODE_PRIVATE).edit().putBoolean("agenda_requested",true).apply()
+            requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS),contactRequest)
+        } else scheduleContacts(true)
     }
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode,permissions,results)
         if(requestCode==contactRequest) {
             scheduleContacts(true)
-            if(!phoneContacts.allowed()) Toast.makeText(this,"Sin acceso a la agenda: se usarán los nombres recibidos o los números",Toast.LENGTH_LONG).show()
+            if(!phoneContacts.allowed()) AlertDialog.Builder(this)
+                .setTitle("Acceso a la agenda")
+                .setMessage("Permite el acceso a Contactos en los ajustes de la aplicación para mostrar los nombres de tu agenda.")
+                .setPositiveButton("Abrir ajustes") { _,_ -> openAgendaSettings() }
+                .setNegativeButton("Cerrar",null).show()
         }
     }
     override fun onResume() { super.onResume(); if(::store.isInitialized) scheduleContacts(true) }
@@ -205,11 +224,16 @@ class MainActivity : Activity() {
         if (!chat) bar.addView(action("+", "Nueva conversación") { newConversation() },LinearLayout.LayoutParams(dp(52),dp(52)))
         bar.addView(action("⋮", "Conexión y diagnóstico") { showSettings() },LinearLayout.LayoutParams(dp(48),dp(52)))
         page.addView(bar)
+        if(chat) {
+            addressLabel=label("",12f,muted).apply { setPadding(dp(20),0,dp(16),dp(5));setBackgroundColor(surface) }
+            page.addView(addressLabel)
+            updateAddressLabel()
+        }
         statusLabel=label(statusText,13f,muted).apply { setPadding(dp(20),dp(4),dp(16),dp(12)); setBackgroundColor(surface) }
         page.addView(statusLabel)
     }
     private fun newPage() {
-        chatTitle=null
+        chatTitle=null;addressLabel=null
         page=column().apply { setBackgroundColor(canvas) }
         setContentView(page)
     }
@@ -354,7 +378,7 @@ class MainActivity : Activity() {
         listOf(number,pair,check,stop,code,output).forEach { settingsBody.addView(it) }
         val save=Button(this).apply { text="Guardar log";setOnClickListener { exportLog() } }
         val view=Button(this).apply { text="Ver log";setOnClickListener { AlertDialog.Builder(this@MainActivity).setTitle("Diagnóstico").setView(ScrollView(this@MainActivity).apply { addView(label(debugLog.snapshot(),12f).apply { setTextIsSelectable(true) }) }).setPositiveButton("Cerrar",null).show() } }
-        settingsBody.addView(Button(this).apply { text="Usar nombres de la agenda"; setOnClickListener { requestContactNames() } })
+        settingsBody.addView(Button(this).apply { text="Permisos de agenda"; setOnClickListener { openAgendaSettings() } })
         settingsBody.addView(save);settingsBody.addView(view)
         pair.setOnClickListener { val phone=number.text.toString().trim();if(!phone.matches(Regex("^[1-9][0-9]{7,14}$")))number.error="Usa el prefijo de país y entre 8 y 15 dígitos" else { automaticReconnect=true;reconnectPolicy.reset();start(phone) } }
         check.setOnClickListener { automaticReconnect=true;reconnectPolicy.reset();start("") }
@@ -372,6 +396,8 @@ class MainActivity : Activity() {
         else registerReceiver(networkReceiver,filter)
         networkReceiverRegistered=true
         if(File(filesDir,"identity.v1").exists())start("")
+        if(!phoneContacts.allowed() && !getSharedPreferences("permissions",Context.MODE_PRIVATE).getBoolean("agenda_requested",false))
+            handler.post { if(!destroyed) requestContactNames() }
     }
     @Deprecated("Legacy navigation supports Android 5")
     override fun onBackPressed() { if(conversation!=null)showList() else super.onBackPressed() }

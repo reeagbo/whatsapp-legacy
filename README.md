@@ -6,6 +6,26 @@ claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
 OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
 y de nombre del servidor, sin excepciones de confianza.
 
+## Cambios posteriores a 0.9 (sin compilar)
+
+- La integración con la agenda está siempre activa. La app solicita el permiso
+  Android al primer inicio que lo necesite, sin tener que activar un botón.
+  Si se deniega, explica cómo habilitarlo en ajustes; nunca omite el consentimiento
+  del sistema ni interrumpe la recepción de mensajes por falta de agenda.
+- Se elimina «Contacto» de la etiqueta de conversación sin número conocido.
+  Al abrirla, se indica «Número pendiente de identificar». Los dígitos de un
+  LID no se convierten en un teléfono ni se asocian manualmente por su terminación.
+- La búsqueda en agenda valida el número internacional completo de cada candidato
+  de PhoneLookup; descarta coincidencias por sufijo y casos con varios contactos.
+- Incidencia 187136: el log 0.9 aportado omite números e identificadores. No permite
+  confirmar a qué dirección corresponde esa terminación ni probar una atribución
+  errónea concreta. Hace falta distinguir un teléfono con + de un LID con ….
+
+Se mantienen la versión 0.9 y Actions manual. No se ejecutan comprobaciones que
+compilen hasta la siguiente petición expresa de una versión. La prueba de UI
+concede el permiso al emulador; la solicitud, denegación y revocación quedan para
+comprobación con la siguiente APK.
+
 ## Versión 0.9-debug: contactos y reconexión
 
 La 0.8 real recibió tres textos y tres copias de otros dispositivos en el log
