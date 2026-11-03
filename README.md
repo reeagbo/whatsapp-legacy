@@ -6,7 +6,7 @@ claves Signal y el intercambio de vinculación. Kotlin proporciona la interfaz y
 OkHttp el transporte TLS/WebSocket con la verificación estándar de certificados
 y de nombre del servidor, sin excepciones de confianza.
 
-## Diagnóstico de identidades (pendiente de compilar)
+## Versión 0.10-debug: agenda automática y diagnóstico
 
 Por petición del usuario, el log incluye dominio (`lid`/`pn`) y los últimos seis
 dígitos de direcciones válidas. `MESSAGE_ADDRESS` registra remitente/destinatario
@@ -21,9 +21,9 @@ pueden coincidir entre personas y no son una prueba suficiente para unir chats.
 No se registran teléfonos completos, identificadores completos, cuerpos de
 mensajes ni nombres de agenda. Estas entradas aparecen con eventos nuevos o al
 abrir conversaciones con la próxima versión; no reconstruyen datos omitidos por
-los logs anteriores. Versión y Actions manual permanecen sin cambios.
+los logs anteriores. Actions permanece manual; la 0.10 se compila por petición expresa.
 
-## Cambios posteriores a 0.9 (sin compilar)
+## Agenda y nombres (0.10)
 
 - La integración con la agenda está siempre activa. La app solicita el permiso
   Android al primer inicio que lo necesite, sin tener que activar un botón.
@@ -143,7 +143,7 @@ considerar que Android borrará sus claves privadas.
 Solo por petición expresa del usuario se inicia manualmente
 `.github/workflows/android.yml` mediante `workflow_dispatch`: pruebas C99, sonda online sin
 número de teléfono (diagnóstica, no bloqueante), compilación y Android Lint.
-Descarga el artefacto con versión `whatsapp-legacy-0.9-debug` de la ejecución correcta.
+Descarga el artefacto con versión `whatsapp-legacy-0.10-debug` de la ejecución correcta.
 
 Para pruebas locales: `bash core/build.sh`. Requiere CMake, compilador C99,
 OpenSSL y zlib de desarrollo. Para la sonda online sin cuenta: `core/wa_probe`.

@@ -33,9 +33,11 @@ def tap(node):
 def screenshot(name):
     (out/name).write_bytes(adb('exec-out', 'screencap', '-p'))
 
-# Allow the mandatory startup agenda request before driving the UI.
-adb('shell','pm','grant',package,'android.permission.READ_CONTACTS')
+# Exercise the automatic agenda permission request on a fresh install.
+adb('shell','pm','revoke',package,'android.permission.READ_CONTACTS')
 adb('shell', 'am', 'start', '-n', package+'/.MainActivity')
+tap(wait_for(lambda a: a.get('resource-id','').endswith('/permission_allow_button')))
+print('PASS: agenda permission is requested automatically at startup')
 tap(wait_for(lambda a: a.get('content-desc') == 'Nueva conversación'))
 wait_for(text('Nueva conversación'))
 root = tree()
