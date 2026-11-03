@@ -135,3 +135,31 @@ JNIEXPORT jstring JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeLog
   if(out)wa_pair_debug_clear(session(handle));
   return out;
 }
+
+static jstring utf8_string(JNIEnv *env,const char *p) {
+  size_t n=strlen(p);if(n>INT32_MAX)return NULL;
+  jbyteArray bytes=(*env)->NewByteArray(env,(jsize)n);if(!bytes)return NULL;
+  (*env)->SetByteArrayRegion(env,bytes,0,(jsize)n,(const jbyte*)p);
+  jclass cls=(*env)->FindClass(env,"java/lang/String");
+  jmethodID init=cls?(*env)->GetMethodID(env,cls,"<init>","([BLjava/lang/String;)V"):NULL;
+  jstring charset=(*env)->NewStringUTF(env,"UTF-8");
+  jstring result=init&&charset?(*env)->NewObject(env,cls,init,bytes,charset):NULL;
+  (*env)->DeleteLocalRef(env,bytes);if(charset)(*env)->DeleteLocalRef(env,charset);if(cls)(*env)->DeleteLocalRef(env,cls);return result;
+}
+JNIEXPORT jobjectArray JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeEvent(JNIEnv *env,jobject self,jlong h){
+ (void)self;const wa_message_event *e=wa_pair_event(session(h));if(!e)return NULL;
+ jclass cls=(*env)->FindClass(env,"java/lang/String");if(!cls)return NULL;
+ jobjectArray out=(*env)->NewObjectArray(env,5,cls,NULL);(*env)->DeleteLocalRef(env,cls);if(!out)return NULL;
+ char state[32];snprintf(state,sizeof state,"%d",e->state);const char *fields[]={e->kind,e->id,e->jid,e->text,state};
+ for(int i=0;i<5;i++){jstring value=utf8_string(env,fields[i]);if(!value)return NULL;(*env)->SetObjectArrayElement(env,out,i,value);(*env)->DeleteLocalRef(env,value);}
+ wa_pair_event_done(session(h));return out;
+}
+JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeSend(JNIEnv *env,jobject self,jlong h,jstring jid,jstring id,jbyteArray text){
+ (void)self;if(!jid||!id||!text)return JNI_FALSE;jsize n=(*env)->GetArrayLength(env,text);if(n<1||n>WA_TEXT_MAX)return JNI_FALSE;
+ const char *j=(*env)->GetStringUTFChars(env,jid,NULL);if(!j)return JNI_FALSE;
+ const char *i=(*env)->GetStringUTFChars(env,id,NULL);if(!i){(*env)->ReleaseStringUTFChars(env,jid,j);return JNI_FALSE;}
+ jbyte *p=(*env)->GetByteArrayElements(env,text,NULL);int ok=p&&wa_pair_send_text(session(h),j,i,(uint8_t*)p,(size_t)n);
+ if(p)(*env)->ReleaseByteArrayElements(env,text,p,JNI_ABORT);
+ (*env)->ReleaseStringUTFChars(env,jid,j);(*env)->ReleaseStringUTFChars(env,id,i);return ok?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT void JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeTick(JNIEnv *env,jobject self,jlong h,jlong now){(void)env;(void)self;if(now>=0)wa_pair_tick(session(h),(uint64_t)now);}

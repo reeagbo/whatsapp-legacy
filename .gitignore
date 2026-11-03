@@ -21,3 +21,6 @@ core/test_pairing
 core/core
 identity.v1
 .signing/
+
+core/test_messaging
+identity.v1.signal/

@@ -62,9 +62,32 @@ jobs:
         run: bash scripts/build-native-deps.sh
       - name: Build installable debug APK
         run: gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+      - name: Enable KVM for Android UI smoke test
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Test conversation UI on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          target: default
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: |
+            adb install app/build/outputs/apk/debug/whatsapp-legacy-0.6-debug.apk
+            python scripts/ui-smoke.py
+      - name: Upload UI verification screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conversation-ui-smoke
+          path: ui-smoke/*.png
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
-          name: whatsapp-legacy-0.5-debug
+          name: whatsapp-legacy-0.6-debug
           path: app/build/outputs/apk/debug/whatsapp-legacy-*.apk
           if-no-files-found: error
           retention-days: 30

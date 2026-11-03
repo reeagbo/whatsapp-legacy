@@ -5,6 +5,8 @@
 #include "noise.h"
 #include "register.h"
 #include "wire.h"
+#include "messaging.h"
+#include "storage_posix.h"
 #include <limits.h>
 #include <openssl/crypto.h>
 #include <openssl/hmac.h>
@@ -32,6 +34,9 @@ struct wa_pair_session {
     size_t len;
   } output[8];
   size_t output_count;
+
+  wa_messenger *messenger;
+  wa_storage message_storage;
 
   unsigned counter;
   char debug_log[32768];
@@ -68,14 +73,14 @@ static const char *safe_tag(const char *tag) {
     "link_code_pairing_wrapped_companion_ephemeral_pub", "companion_server_auth_key_pub",
     "companion_platform_id", "companion_platform_display", "link_code_pairing_nonce",
     "primary_identity_pub", "link_code_pairing_wrapped_primary_ephemeral_pub", "edge_routing",
-    "routing_info", "xmlstreamend"};
+    "routing_info", "xmlstreamend", "message", "receipt", "enc", "participants", "to", "usync", "list", "count", "registration", "key", "active"};
   if (tag) for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
     if (!strcmp(tag, names[i])) return names[i];
   return "<other>";
 }
 static const char *safe_type(const char *type) {
   if (!type) return "-";
-  const char *const types[] = {"get", "set", "result", "error", "link_code_companion_reg"};
+  const char *const types[] = {"get", "set", "result", "error", "link_code_companion_reg", "text", "pkmsg", "msg", "read", "delivery", "retry"};
   for (size_t i=0;i<sizeof types/sizeof types[0];i++) if(!strcmp(type,types[i]))return types[i];
   return "<other>";
 }
@@ -89,7 +94,7 @@ static void trace_node(wa_pair_session *s, const char *direction, const wa_node 
   const char *kind = !id ? "none" : !strcmp(id,"legacy-pair-1") ? "pair-request" :
     !strcmp(id,"legacy-finish-1") ? "pair-finish" : !strncmp(id,"legacy-ping-",12) ? "ping" : "other";
   trace(s,"%s CORRELATION id_kind=%s",direction,kind);
-  const char *code = wa_node_get(n,"code"); if(!code)code=wa_node_get(n,"reason");
+  const char *code = wa_node_get(n,"code"); if(!code)code=wa_node_get(n,"reason"); if(!code)code=wa_node_get(n,"error");
   trace(s,"%s NODE tag=%s type=%s code=%s attrs=%zu data_bytes=%zu",direction,
         safe_tag(n->tag),safe_type(wa_node_get(n,"type")),safe_code(code),n->attr_count,n->data_len);
   unsigned count=0;
@@ -217,6 +222,8 @@ wa_pair_session *wa_pair_create(const char *path, const char *phone) {
 void wa_pair_free(wa_pair_session *s) {
   if (!s)
     return;
+  wa_messenger_free(s->messenger);
+  wa_storage_posix_close(&s->message_storage);
   free(s->input);
   for (size_t j = 0; j < s->output_count; j++)
     free(s->output[j].data);
@@ -308,6 +315,17 @@ static int send_node(wa_pair_session *s, wa_tree *t) {
 
   return 1;
 }
+static int messenger_send(void *user, wa_tree *tree) { return send_node(user, tree); }
+int wa_pair_send_text(wa_pair_session *s,const char *jid,const char *id,const uint8_t *text,size_t n) {
+  if(!s||s->state!=5||!s->messenger)return 0;
+  int ok=wa_messenger_send(s->messenger,jid,id,text,n);
+  trace(s,"MESSAGE_SEND_REQUEST accepted=%d text_bytes=%zu",ok,n);
+  return ok;
+}
+void wa_pair_tick(wa_pair_session *s,uint64_t now) { if(s&&s->messenger)wa_messenger_tick(s->messenger,now); }
+const wa_message_event *wa_pair_event(const wa_pair_session *s) { return s?wa_messenger_event(s->messenger):NULL; }
+void wa_pair_event_done(wa_pair_session *s) { if(s)wa_messenger_event_done(s->messenger); }
+
 static wa_tree *iq(const char *type, const char *id, const char *xmlns) {
   wa_tree *t = wa_tree_create();
 
@@ -622,6 +640,11 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
 
     return 1;
   }
+  if (s->state==5 && s->messenger && !strcmp(n->tag,"iq")) {
+    int ok=wa_messenger_node(s->messenger,n);
+    trace(s,"MESSAGING_IQ_HANDLED ok=%d",ok);
+    return ok;
+  }
   if (!strcmp(n->tag, "iq") && type && !strcmp(type, "error")) {
     const wa_node *e = wa_node_child(n, "error");
     snprintf(s->status, sizeof s->status,
@@ -667,11 +690,19 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
 
     s->state = 5;
     trace(s,"STORED_SESSION_AUTHENTICATED");
-    snprintf(s->status, sizeof s->status,
-             "Sesion autenticada con las claves guardadas. Envio y recepcion "
-             "de mensajes pendientes.");
-
+    char directory[1100];
+    snprintf(directory,sizeof directory,"%s.signal",s->path);
+    if(!wa_storage_posix(&s->message_storage,directory) ||
+       !(s->messenger=wa_messenger_create(&s->identity,&s->message_storage,
+          wa_node_get(n,"lid"),messenger_send,s)) || !wa_messenger_start(s->messenger))
+      return fail(s,"Sesion autenticada, pero no se pudo preparar el almacenamiento Signal.");
+    snprintf(s->status, sizeof s->status,"Sesion autenticada. Preparando mensajeria cifrada...");
     return 1;
+  }
+  if(s->state==5 && s->messenger) {
+    int ok=wa_messenger_node(s->messenger,n);
+    trace(s,"MESSAGING_NODE_HANDLED ok=%d",ok);
+    return ok;
   }
   return 1;
 }
@@ -825,7 +856,7 @@ int wa_pair_feed(wa_pair_session *s, const uint8_t *bytes, size_t n) {
   return 1;
 }
 int wa_pair_ping(wa_pair_session *s) {
-  if (!s || s->state < 0 || !s->noise.transport || s->state >= 4)
+  if (!s || s->state < 0 || !s->noise.transport || (s->state == 4 || s->state == 6))
     return 0;
 
   char id[40];

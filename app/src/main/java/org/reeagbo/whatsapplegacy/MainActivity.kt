@@ -1,5 +1,14 @@
 package org.reeagbo.whatsapplegacy
 
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.os.SystemClock
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.view.WindowManager
+import java.util.UUID
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipData
@@ -33,6 +42,9 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
+    private external fun nativeEvent(handle: Long): Array<String>?
+    private external fun nativeSend(handle: Long, jid: String, id: String, text: ByteArray): Boolean
+    private external fun nativeTick(handle: Long, now: Long)
     private external fun nativeLog(handle: Long): String
     private external fun nativeDiagnostics(): String
     private external fun nativeCreate(path: String, phone: String): Long
@@ -68,74 +80,173 @@ class MainActivity : Activity() {
     private var crashHandler: Thread.UncaughtExceptionHandler? = null
     private val appVersion: String by lazy { packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown" }
 
+    private lateinit var store: ChatStore
+    private lateinit var page: LinearLayout
+    private lateinit var settingsBody: LinearLayout
+    private lateinit var statusLabel: TextView
+    private var conversation: String? = null
+    private var messageList: LinearLayout? = null
+    private var messageScroll: ScrollView? = null
+    private var compose: EditText? = null
+    private var sendButton: Button? = null
+    private var connected = false
+    private var statusText = "Sin conexión"
+    private var pendingMessage: String? = null
+    private var reconnects = 0
+    private val green = Color.rgb(18, 101, 82)
+    private val ink = Color.rgb(30, 45, 42)
+    private val muted = Color.rgb(96, 112, 107)
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+    private fun shape(color: Int, radius: Int = 14) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
+    private fun label(value: String, size: Float = 16f, color: Int = ink) = TextView(this).apply { text = value; textSize = size; setTextColor(color) }
+    private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    private fun display(jid: String) = if (jid.endsWith("@lid")) "Contacto vinculado" else "+" + jid.substringBefore('@').substringBefore(':')
+    private fun title(jid: String) = store.chats().firstOrNull { it.jid == jid }?.name?.takeIf { it.isNotBlank() } ?: display(jid)
+    private fun action(text: String, description: String, click: () -> Unit) = Button(this).apply {
+        this.text = text; contentDescription = description; setTextColor(green); textSize = 23f
+        minWidth = dp(48); minimumWidth = dp(48); minHeight = dp(48); background = shape(Color.TRANSPARENT)
+        setOnClickListener { click() }
+    }
+    private fun header(name: String, chat: Boolean) {
+        val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(10),dp(9),dp(10),dp(6)); setBackgroundColor(Color.WHITE) }
+        if (chat) bar.addView(action("‹", "Volver a conversaciones") { showList() }, LinearLayout.LayoutParams(dp(48),dp(48)))
+        bar.addView(label(name, if(chat) 21f else 26f).apply { setTypeface(null,Typeface.BOLD); maxLines=1; gravity=Gravity.CENTER_VERTICAL }, LinearLayout.LayoutParams(0,dp(52),1f).apply { gravity=Gravity.CENTER_VERTICAL })
+        if (!chat) bar.addView(action("+", "Nueva conversación") { newConversation() },LinearLayout.LayoutParams(dp(52),dp(52)))
+        bar.addView(action("⋮", "Conexión y diagnóstico") { showSettings() },LinearLayout.LayoutParams(dp(48),dp(52)))
+        page.addView(bar)
+        statusLabel=label(statusText,13f,muted).apply { setPadding(dp(20),dp(4),dp(16),dp(12)); setBackgroundColor(Color.WHITE) }
+        page.addView(statusLabel)
+    }
+    private fun newPage() {
+        page=column().apply { setBackgroundColor(Color.rgb(245,247,245)) }
+        setContentView(page)
+    }
+    private fun showList() {
+        conversation=null; messageList=null; messageScroll=null; compose=null; sendButton=null
+        newPage(); header("Conversaciones",false)
+        val rows=column()
+        val chats=store.chats()
+        if(chats.isEmpty()) rows.addView(column().apply {
+            setPadding(dp(28),dp(68),dp(28),dp(28))
+            addView(label("Tu primera conversación",23f).apply { setTypeface(null,Typeface.BOLD) })
+            addView(label("Pulsa + para añadir un número y escribirle.",16f,muted).apply { setPadding(0,dp(12),0,0) })
+        })
+        for(chat in chats) {
+            val name=chat.name.ifBlank { display(chat.jid) }
+            val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); setBackgroundColor(Color.WHITE); minimumHeight=dp(86); isClickable=true; contentDescription="Abrir conversación con $name" }
+            row.addView(label(name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(Color.rgb(223,238,230),28) },LinearLayout.LayoutParams(dp(52),dp(52)))
+            row.addView(column().apply {
+                setPadding(dp(14),0,dp(8),0)
+                addView(label(name,18f).apply { setTypeface(null,Typeface.BOLD); setSingleLine(true) })
+                addView(label(chat.preview.ifBlank { "Conversación nueva" },14f,muted).apply { setSingleLine(true); ellipsize=android.text.TextUtils.TruncateAt.END; setPadding(0,dp(5),0,0) })
+            },LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1f))
+            row.addView(label(SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(chat.time)),12f,muted))
+            row.setOnClickListener { showChat(chat.jid) }; rows.addView(row)
+            rows.addView(View(this).apply { setBackgroundColor(Color.rgb(235,240,236)) },LinearLayout.LayoutParams(-1,dp(1)))
+        }
+        page.addView(ScrollView(this).apply { addView(rows) },LinearLayout.LayoutParams(-1,0,1f))
+    }
+    private fun newConversation() {
+        val form=column().apply { setPadding(dp(24),dp(8),dp(24),0) }
+        val phone=EditText(this).apply { hint="Número internacional (34…)"; inputType=InputType.TYPE_CLASS_PHONE; isSaveEnabled=false }
+        val name=EditText(this).apply { hint="Nombre (opcional)"; setSingleLine(true); isSaveEnabled=false }
+        form.addView(phone);form.addView(name)
+        val dialog=AlertDialog.Builder(this).setTitle("Nueva conversación").setView(form).setNegativeButton("Cancelar",null).setPositiveButton("Abrir",null).create()
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val value=phone.text.toString().trim().removePrefix("+").replace(" ","").replace("-","")
+            if(!value.matches(Regex("^[1-9][0-9]{7,14}$")))phone.error="Incluye el prefijo de país: entre 8 y 15 dígitos"
+            else { val jid="$value@s.whatsapp.net";debugLog.hide(value);store.addChat(jid,name.text.toString().trim());dialog.dismiss();showChat(jid) }
+        } };dialog.show()
+    }
+    private fun showChat(jid: String) {
+        conversation=jid;newPage();header(title(jid),true)
+        messageList=column().apply { setPadding(dp(12),dp(16),dp(12),dp(16)) }
+        messageScroll=ScrollView(this).apply { isFillViewport=true;addView(messageList) }
+        page.addView(messageScroll,LinearLayout.LayoutParams(-1,0,1f))
+        val bar=LinearLayout(this).apply { gravity=Gravity.BOTTOM;setPadding(dp(10),dp(8),dp(10),dp(10));setBackgroundColor(Color.WHITE) }
+        compose=EditText(this).apply { hint="Escribe un mensaje"; minLines=1;maxLines=5;textSize=17f;setTextColor(ink);background=shape(Color.rgb(239,243,240),24);setPadding(dp(16),dp(12),dp(16),dp(12));isSaveEnabled=false;inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES }
+        bar.addView(compose,LinearLayout.LayoutParams(0,-2,1f))
+        sendButton=action("↑","Enviar mensaje") { sendText() }.apply { setTextColor(Color.WHITE);background=shape(green,28) }
+        bar.addView(sendButton,LinearLayout.LayoutParams(dp(54),dp(54)).apply { leftMargin=dp(8) });page.addView(bar)
+        refreshMessages();updateSend()
+    }
+    private fun refreshMessages() {
+        val jid=conversation?:return;val list=messageList?:return;list.removeAllViews()
+        for(message in store.messages(jid)) {
+            val line=LinearLayout(this).apply { gravity=if(message.outgoing)Gravity.END else Gravity.START;setPadding(0,dp(4),0,dp(4)) }
+            val bubble=column().apply { background=shape(if(message.outgoing)Color.rgb(218,239,221) else Color.WHITE);setPadding(dp(13),dp(10),dp(13),dp(8));minimumWidth=dp(104) }
+            bubble.addView(label(message.text,17f).apply { maxWidth=(resources.displayMetrics.widthPixels*0.73).toInt();setTextIsSelectable(true) })
+            val state=if(!message.outgoing) "" else when(message.status) { 0->"Pendiente";1->"Enviado · sin confirmar";2->"Aceptado";3->"Entregado";4->"Leído";-2->"Sin confirmación";else->"No enviado" }
+            bubble.addView(label(SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(message.time))+if(state.isBlank()) "" else " · $state",11f,muted).apply { gravity=Gravity.END;setPadding(0,dp(6),0,0) })
+            if(message.outgoing&&message.status<0&&message.note.isNotBlank())bubble.addView(label(message.note,12f,muted).apply { maxWidth=(resources.displayMetrics.widthPixels*0.73).toInt() })
+            line.addView(bubble);list.addView(line)
+        }
+        messageScroll?.post { messageScroll?.fullScroll(View.FOCUS_DOWN) }
+    }
+    private fun updateSend() { sendButton?.isEnabled=connected&&pendingMessage==null;sendButton?.alpha=if(connected&&pendingMessage==null)1f else .4f }
+    private fun sendText() {
+        val jid=conversation?:return;val text=compose?.text?.toString()?.trim().orEmpty();if(text.isBlank())return
+        val bytes=text.toByteArray(Charsets.UTF_8)
+        if(bytes.size>4000){compose?.error="Máximo 4.000 bytes de texto por mensaje";return}
+        val active=connection;if(!connected||active==null){Toast.makeText(this,"Conecta la sesión primero",Toast.LENGTH_SHORT).show();return}
+        val id="3EB0"+UUID.randomUUID().toString().replace("-","").uppercase(Locale.ROOT)
+        store.append(id,jid,text,true,0);pendingMessage=id;compose?.text?.clear();refreshMessages();updateSend()
+        if(!active.send(jid,id,bytes)){store.status(id,-1,"No se pudo iniciar el envío");pendingMessage=null;refreshMessages();updateSend()}
+    }
+    private fun applyEvents(events: List<Array<String>>) {
+        for(e in events) {
+            if(e.size!=5)continue;val state=e[4].toIntOrNull()?:0
+            when(e[0]) {
+                "ready" -> { connected=true;statusText="Conectado · texto cifrado";reconnects=0 }
+                "status" -> { store.status(e[1],state,e[3]);if(e[1]==pendingMessage&&(state<0||state>=2))pendingMessage=null }
+                "message", "sent-copy" -> if(e[1].isNotBlank()&&e[2].isNotBlank()) { debugLog.hide(e[2].substringBefore('@'));store.append(e[1],e[2],e[3],e[0]=="sent-copy",state) }
+                "notice" -> { statusText=e[3];if(state<0)Toast.makeText(this,e[3],Toast.LENGTH_LONG).show() }
+            }
+        }
+        statusLabel.text=statusText
+        if(conversation!=null)refreshMessages() else showList()
+        updateSend()
+    }
+    private fun showSettings() {
+        (settingsBody.parent as? ViewGroup)?.removeView(settingsBody)
+        AlertDialog.Builder(this).setTitle("Conexión · $appVersion").setView(ScrollView(this).apply { addView(settingsBody) }).setPositiveButton("Cerrar",null).show()
+    }
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
-        debugLog = DebugLog(File(filesDir, "diagnostics/latest.txt"))
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        window.statusBarColor=Color.WHITE
+        window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        debugLog=DebugLog(File(filesDir,"diagnostics/latest.txt"))
         debugLog.add("APP_OPEN version=$appVersion sdk=${Build.VERSION.SDK_INT} abis=${Build.SUPPORTED_ABIS.joinToString(",")}")
-        oldCrashHandler = Thread.getDefaultUncaughtExceptionHandler()
-        crashHandler = Thread.UncaughtExceptionHandler { thread, error ->
-            debugLog.failure("UNCAUGHT", error)
-            oldCrashHandler?.uncaughtException(thread, error)
-        }
+        oldCrashHandler=Thread.getDefaultUncaughtExceptionHandler()
+        crashHandler=Thread.UncaughtExceptionHandler { thread,error -> debugLog.failure("UNCAUGHT",error);oldCrashHandler?.uncaughtException(thread,error) }
         Thread.setDefaultUncaughtExceptionHandler(crashHandler)
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = (20 * resources.displayMetrics.density).toInt()
-            setPadding(pad, pad, pad, pad)
-        }
-        layout.addView(TextView(this).apply { text = "WhatsApp Legacy $appVersion"; textSize = 26f })
-        layout.addView(TextView(this).apply {
-            text = "Vinculación experimental mediante código. Necesitas WhatsApp principal activo. Esta versión todavía no envía ni recibe mensajes."
-            textSize = 16f
-        })
-        number = EditText(this).apply {
-            hint = "Número internacional sin + (ej.: 34…)"
-            inputType = InputType.TYPE_CLASS_PHONE
-            setSingleLine(true)
-            // Avoid putting the phone number into saved view state or backups.
-            isSaveEnabled = false
-        }
-        pair = Button(this).apply { text = "Solicitar código de vinculación" }
-        check = Button(this).apply { text = "Comprobar sesión guardada" }
-        stop = Button(this).apply { text = "Cancelar"; isEnabled = false }
-        code = TextView(this).apply { textSize = 34f; setTextIsSelectable(true) }
-        output = TextView(this).apply { textSize = 16f; setTextIsSelectable(true) }
-        val diagnostic = Button(this).apply { text = "Pruebas locales C99" }
-        val saveLog = Button(this).apply { text = "Guardar log" }
-        val viewLog = Button(this).apply { text = "Ver log" }
-        val copyLog = Button(this).apply { text = "Copiar log" }
-        listOf(number, pair, check, stop, code, output, diagnostic, saveLog, viewLog, copyLog).forEach { layout.addView(it) }
-        saveLog.setOnClickListener { exportLog() }
-        copyLog.setOnClickListener {
-            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                .setPrimaryClip(ClipData.newPlainText("WhatsApp Legacy log", debugLog.snapshot()))
-            Toast.makeText(this, "Log copiado", Toast.LENGTH_SHORT).show()
-        }
-        viewLog.setOnClickListener {
-            val text = TextView(this).apply { this.text = debugLog.snapshot(); setTextIsSelectable(true); setPadding(16, 16, 16, 16); textSize = 12f }
-            AlertDialog.Builder(this).setTitle("Registro de diagnóstico")
-                .setView(ScrollView(this).apply { addView(text) }).setPositiveButton("Cerrar", null).show()
-        }
-        setContentView(ScrollView(this).apply { addView(layout) })
-        pair.setOnClickListener {
-            val phone = number.text.toString().trim()
-            if (!phone.matches(Regex("^[1-9][0-9]{7,14}$"))) {
-                number.error = "Usa entre 8 y 15 dígitos, con prefijo de país y sin +"
-            } else start(phone)
-        }
-        check.setOnClickListener { start("") }
-        stop.setOnClickListener {
-            connection?.cancel()
-            connection = null
-            render("Conexión cancelada. Las claves guardadas se conservan.", "", false)
-        }
-        diagnostic.setOnClickListener { if (connection == null) output.text = nativeDiagnostics() }
-        render("Listo. Las claves se guardan en el espacio privado de esta aplicación.", "", false)
+        store=ChatStore(this);store.interrupted()
+        settingsBody=column().apply { setPadding(dp(20),dp(4),dp(20),dp(16)) }
+        number=EditText(this).apply { hint="Tu número internacional, sin +";inputType=InputType.TYPE_CLASS_PHONE;setSingleLine(true);isSaveEnabled=false }
+        pair=Button(this).apply { text="Solicitar código de vinculación" }
+        check=Button(this).apply { text="Conectar sesión guardada" }
+        stop=Button(this).apply { text="Desconectar";isEnabled=false }
+        code=label("",32f).apply { setTextIsSelectable(true) };output=label("",14f)
+        listOf(number,pair,check,stop,code,output).forEach { settingsBody.addView(it) }
+        val save=Button(this).apply { text="Guardar log";setOnClickListener { exportLog() } }
+        val view=Button(this).apply { text="Ver log";setOnClickListener { AlertDialog.Builder(this@MainActivity).setTitle("Diagnóstico").setView(ScrollView(this@MainActivity).apply { addView(label(debugLog.snapshot(),12f).apply { setTextIsSelectable(true) }) }).setPositiveButton("Cerrar",null).show() } }
+        settingsBody.addView(save);settingsBody.addView(view)
+        pair.setOnClickListener { val phone=number.text.toString().trim();if(!phone.matches(Regex("^[1-9][0-9]{7,14}$")))number.error="Usa el prefijo de país y entre 8 y 15 dígitos" else start(phone) }
+        check.setOnClickListener { reconnects=0;start("") }
+        stop.setOnClickListener { connection?.cancel();connection=null;connected=false;pendingMessage=null;store.interrupted();render("Desconectado. Las claves se conservan.","",false);updateSend() }
+        showList();render("Sin conexión · abre ⋮ para vincular", "",false)
+        if(File(filesDir,"identity.v1").exists())start("")
     }
+    @Deprecated("Legacy navigation supports Android 5")
+    override fun onBackPressed() { if(conversation!=null)showList() else super.onBackPressed() }
 
     private fun render(status: String, pairingCode: String, busy: Boolean) {
         if (destroyed) return
         output.text = status
+        statusText = status
+        if (::statusLabel.isInitialized) statusLabel.text = status
+        updateSend()
         code.text = if (pairingCode.length == 8) "${pairingCode.take(4)}-${pairingCode.takeLast(4)}" else ""
         pair.isEnabled = !busy
         check.isEnabled = !busy
@@ -145,6 +256,8 @@ class MainActivity : Activity() {
 
     private fun start(phone: String) {
         connection?.cancel()
+        connected=false
+        updateSend()
         debugLog.hide(phone)
         val attempt = ++attempts
         debugLog.add("ATTEMPT $attempt BEGIN mode=${if (phone.isEmpty()) "check-session" else "pair-code"}")
@@ -160,6 +273,21 @@ class MainActivity : Activity() {
         private var ws: WebSocket? = null
         private var finished = false
         private var lastState: Int? = null
+        private var authenticated = false
+        fun send(jid: String, id: String, text: ByteArray): Boolean = synchronized(lock) {
+            if(finished || handle==0L)return@synchronized false
+            nativeTick(handle,SystemClock.elapsedRealtime())
+            val ok=nativeSend(handle,jid,id,text)
+            ws?.let { flush(it) }
+            publish()
+            ok
+        }
+        private fun events() {
+            if(handle==0L)return
+            val pending=mutableListOf<Array<String>>()
+            while(true)pending.add(nativeEvent(handle)?:break)
+            if(pending.isNotEmpty())handler.post { if(connection===this&&!destroyed)applyEvents(pending) }
+        }
         private fun log(event: String) { debugLog.add("A$attempt $event") }
         private fun drainNative() {
             if (handle != 0L) nativeLog(handle).lineSequence().filter { it.isNotBlank() }.forEach { log(it) }
@@ -174,6 +302,7 @@ class MainActivity : Activity() {
             log("NATIVE_CREATE_END allocated=${handle != 0L}")
             if (handle == 0L) { finish("No se pudo preparar la sesión."); return@synchronized }
             if (nativeState(handle) < 0) { finish(nativeStatus(handle)); return@synchronized }
+            nativeTick(handle,SystemClock.elapsedRealtime())
             log("WEBSOCKET_CONNECT_REQUEST")
             val tracedHttp = try { NetworkTrace.client(http) { event -> log(event) } }
                 catch (error: Exception) { debugLog.failure("NETWORK_SETUP_FAILED", error); finish("No se pudo preparar TLS."); return@synchronized }
@@ -196,7 +325,7 @@ class MainActivity : Activity() {
             flush(webSocket)
             publish()
             if (!finished) heartbeat = timer.scheduleAtFixedRate({ synchronized(lock) {
-                if (!finished && handle != 0L) { nativePing(handle); flush(webSocket); publish() }
+                if (!finished && handle != 0L) { nativeTick(handle,SystemClock.elapsedRealtime());nativePing(handle); flush(webSocket); publish() }
             } }, 15, 15, TimeUnit.SECONDS)
         }
 
@@ -226,6 +355,8 @@ class MainActivity : Activity() {
 
         private fun publish() {
             if (finished || handle == 0L) return
+            nativeTick(handle,SystemClock.elapsedRealtime())
+            events()
             val state = nativeState(handle)
             val status = nativeStatus(handle)
             val pairingCode = nativeCode(handle)
@@ -240,24 +371,28 @@ class MainActivity : Activity() {
                 finish("Identidad verificada. Reconectando para completar la vinculación…", reconnect = true)
                 return
             }
-            if (state < 0 || state >= 5) { finish(status); return }
+            if(state==5) {
+                if(!authenticated) { authenticated=true;deadline?.cancel(false);handler.post { if(connection===this)render(status,"",true) } }
+                return
+            }
+            if (state < 0 || state == 6) { finish(status); return }
             handler.post { if (connection === this && !finished) render(status, pairingCode, true) }
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) = synchronized(lock) {
             log("WEBSOCKET_CLOSING close_code=$code")
             webSocket.close(code, null)
-            if (!finished) finish("WhatsApp ha cerrado la conexión antes de confirmar la vinculación.")
+            if (!finished) finish("WhatsApp ha cerrado la conexión.",retryNetwork=authenticated)
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = synchronized(lock) {
             if (finished) { log("WEBSOCKET_CLOSED_AFTER_ATTEMPT"); return@synchronized }
             log("WEBSOCKET_FAILURE http=${response?.code ?: "none"}")
             debugLog.failure("A$attempt NETWORK", t)
-            if (!finished) finish("Error de conexión: ${t.javaClass.simpleName}. Comprueba Internet y la fecha del móvil.")
+            if (!finished) finish("Conexión interrumpida. Las claves se conservan.", retryNetwork=authenticated)
         }
 
-        private fun finish(status: String, reconnect: Boolean = false) {
+        private fun finish(status: String, reconnect: Boolean = false, retryNetwork: Boolean = false) {
             if (finished) return
             drainNative()
             log("ATTEMPT_END state=${if (handle != 0L) nativeState(handle) else -1}")
@@ -273,7 +408,14 @@ class MainActivity : Activity() {
                         start("")
                     } else {
                         connection = null
+                        connected=false
+                        pendingMessage=null
+                        store.interrupted()
                         render(status, "", false)
+                        if(retryNetwork && reconnects<3) {
+                            val delay=(2000L shl reconnects++)
+                            handler.postDelayed({ if(connection==null&&!destroyed)start("") },delay)
+                        }
                     }
                 }
             }
@@ -326,6 +468,7 @@ class MainActivity : Activity() {
         destroyed = true
         connection?.cancel()
         connection = null
+        if(::store.isInitialized)store.close()
         timer.shutdownNow()
         http.dispatcher.executorService.shutdown()
         http.connectionPool.evictAll()

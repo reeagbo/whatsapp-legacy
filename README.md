@@ -42,7 +42,7 @@ reconecta automáticamente con las claves guardadas; solo una respuesta de login
 una confirmación final. Un nuevo código permite repetir una vinculación rechazada
 conservando las claves de largo plazo. Guarda claves y certificado en su directorio privado, con
 archivos de modo 0600 y escritura atómica. No incluye datos de cuenta en logs,
-artefactos de Actions ni el repositorio. No puede enviar o recibir mensajes.
+artefactos de Actions ni el repositorio. La versión 0.6 incorpora texto individual cifrado y una lista local de conversaciones.
 
 **Estado de validación:** las pruebas locales incluyen un móvil principal
 simulado que descifra el paquete, las firmas de identidad y rechazo de HMAC
@@ -63,7 +63,7 @@ considerar que Android borrará sus claves privadas.
 
 Cada push ejecuta `.github/workflows/android.yml`: pruebas C99, sonda online sin
 número de teléfono (diagnóstica, no bloqueante), compilación y Android Lint.
-Descarga el artefacto con versión `whatsapp-legacy-0.5-debug` de la ejecución correcta.
+Descarga el artefacto con versión `whatsapp-legacy-0.6-debug` de la ejecución correcta.
 
 Para pruebas locales: `bash core/build.sh`. Requiere CMake, compilador C99,
 OpenSSL y zlib de desarrollo. Para la sonda online sin cuenta: `core/wa_probe`.
@@ -75,3 +75,43 @@ Instala los SDK/NDK fijados en el workflow, define `ANDROID_NDK_HOME`, ejecuta
 El núcleo inicial procede de `wa_core_phase12.zip`. La interfaz Android se
 reconstruyó al no estar guardada la mencionada en la conversación anterior.
 Ver `THIRD_PARTY.md` y `LICENSE` para las dependencias y referencias del protocolo.
+
+
+## Conversaciones y texto (0.6)
+
+La pantalla principal es una lista local de conversaciones. Pulsa **+**, introduce
+un número internacional y opcionalmente un nombre. La pantalla de chat incluye
+texto, compositor y estado por mensaje. La sesión guardada conecta al abrir la
+app; la vinculación y el log están en **⋮**. Actualiza sobre 0.5 para conservar
+las claves. No se importan contactos ni se descarga el historial anterior.
+
+El núcleo mantiene la sesión abierta, publica 32 preclaves si es necesario,
+activa la sesión, consulta dispositivos y direcciones LID, verifica los paquetes
+firmados de claves y cifra para todos los dispositivos enumerados. Incluye la
+copia DeviceSentMessage para nuestros otros dispositivos. Conserva las sesiones
+Signal y fija las identidades conocidas; un cambio no se acepta silenciosamente.
+El envío es explícito: no se reenvía automáticamente un mensaje cuyo resultado
+se desconoce. Distingue pendiente, enviado sin confirmación, aceptado, entregado
+y leído según eventos del servidor. No se mandan confirmaciones de lectura.
+
+Alcance inicial: texto individual UTF-8 de hasta 4.000 bytes, hasta 32 dispositivos
+por envío y un envío en preparación a la vez. Recibe texto directo y copias de
+nuestros dispositivos. Grupos, multimedia, recuperación de historial, sincronía
+de estado, dispositivos hosted y reintentos de descifrado quedan pendientes.
+Los errores de consulta o restricciones de WhatsApp pueden impedir un envío;
+aceptación por el servidor no equivale a entrega.
+
+**Portabilidad:** `messaging.{c,h}` y `signal_engine.{c,h}` no conocen Android, JNI,
+SQLite, sockets ni rutas de archivos. Reciben almacenamiento durable por
+`wa_storage`, envío de nodos por callback y tiempo monotónico desde el adaptador.
+`storage_posix` implementa la persistencia en Android/Linux y `crypto_signal`
+provee la criptografía de libsignal mediante OpenSSL. La interfaz conserva las
+conversaciones en SQLite (`ChatStore.kt`) y recibe eventos por JNI. El envoltorio
+histórico de vinculación todavía usa el adaptador POSIX para su identidad.
+
+Validación: intercambio sintético bidireccional, persistencia del ratchet,
+preclaves, copia propia, Unicode, rechazo de cambio de identidad, estados y
+entradas inválidas. ASan/UBSan sin errores. Actions compila tres ABI, ejecuta JVM
+unit tests y Lint, y prueba +/validación/navegación/persistencia en un emulador.
+El login real ya se confirmó en 0.5; el primer envío real de 0.6 sigue pendiente
+de la prueba con el usuario. Ninguna prueba automática usa cuentas o envía mensajes.

@@ -1,0 +1,57 @@
+#define _POSIX_C_SOURCE 200809L
+#include "messaging.c"
+#include "storage_posix.h"
+#include <assert.h>
+#include <dirent.h>
+#include <unistd.h>
+/* Synthetic peers, isolated storage, no network or phone/account used. */
+typedef struct {uint8_t bytes[32768];size_t n;int sends;} capture;
+static int capture_node(void *u,wa_tree *t){capture *c=u;assert(wa_node_encode(t->root,c->bytes,sizeof c->bytes,&c->n));c->sends++;return 1;}
+static wa_tree *captured(capture *c){wa_tree *t=wa_node_decode(c->bytes,c->n);assert(t);return t;}
+static void result(wa_messenger *m,const char *id){wa_tree *t=iq("result",id,NULL);assert(t&&wa_messenger_node(m,t->root));wa_tree_free(t);}
+static void user(wa_tree *t,wa_node *list,const char *pn,const char *lid,int self){
+ wa_node *u=wa_node_add(t,list,"user");assert(u&&wa_node_attr(u,"jid",pn));wa_node *l=wa_node_add(t,u,"lid");assert(l&&wa_node_attr(l,"val",lid));
+ wa_node *d=wa_node_add(t,u,"devices"),*dl=wa_node_add(t,d,"device-list"),*a=wa_node_add(t,dl,"device");assert(a&&wa_node_attr(a,"id","0"));
+ if(self){a=wa_node_add(t,dl,"device");assert(a&&wa_node_attr(a,"id","1")&&wa_node_attr(a,"key-index","1"));}
+}
+static void bundle(wa_tree *t,wa_node *list,const char *jid,wa_identity *id,wa_signal *signal){
+ wa_node *u=wa_node_add(t,list,"user");assert(u&&wa_node_attr(u,"jid",jid));uint8_t reg[4],pk[32];be(id->registration_id,reg,4);
+ assert(data(t,u,"registration",reg,4)&&data(t,u,"identity",id->identity_public,32));assert(keynode(t,u,"skey",1,id->prekey_public,id->prekey_signature));
+ assert(wa_signal_prekey(signal,50,pk)&&keynode(t,u,"key",50,pk,NULL));
+}
+static void clear_events(wa_messenger *m){while(wa_messenger_event(m))wa_messenger_event_done(m);}
+static void cleanup(const char *path){DIR *d=opendir(path);assert(d);struct dirent *e;while((e=readdir(d))){if(e->d_name[0]=='.')continue;char file[1024];snprintf(file,sizeof file,"%s/%s",path,e->d_name);assert(!unlink(file));}closedir(d);assert(!rmdir(path));}
+int main(void){
+ char dir[]="/tmp/wa-messages-XXXXXX";assert(mkdtemp(dir));char pa[256],pbdir[256],pp[256];snprintf(pa,sizeof pa,"%s/a",dir);snprintf(pbdir,sizeof pbdir,"%s/b",dir);snprintf(pp,sizeof pp,"%s/p",dir);
+ wa_storage a,b,p;assert(wa_storage_posix(&a,pa)&&wa_storage_posix(&b,pbdir)&&wa_storage_posix(&p,pp));wa_identity ai,bi,pi;assert(wa_identity_generate(&ai)&&wa_identity_generate(&bi)&&wa_identity_generate(&pi));
+ strcpy(ai.jid,"34111111111:1@s.whatsapp.net");memcpy(ai.account,"synthetic-certificate",21);ai.account_len=21;
+ capture c={0};wa_messenger *m=wa_messenger_create(&ai,&a,"11111111:1@lid",capture_node,&c);wa_signal *bob=wa_signal_create(&bi,&b),*primary=wa_signal_create(&pi,&p);assert(m&&bob&&primary);
+ wa_messenger_tick(m,100000);assert(wa_messenger_start(m));wa_tree *t=captured(&c);assert(!strcmp(wa_node_get(t->root,"id"),"legacy-prekeys-count"));wa_tree_free(t);
+ t=iq("result","legacy-prekeys-count",NULL);wa_node *count=wa_node_add(t,t->root,"count");assert(count&&wa_node_attr(count,"value","0"));assert(wa_messenger_node(m,t->root));wa_tree_free(t);
+ t=captured(&c);wa_node *list=wa_node_child(t->root,"list");assert(list);size_t prekeys=0;for(wa_node *v=list->child;v;v=v->next)prekeys++;assert(prekeys==32);wa_tree_free(t);
+ result(m,"legacy-prekeys-upload");result(m,"legacy-active");assert(m->ready);clear_events(m);
+ const uint8_t message[]="Hola, prueba C99: café y \xf0\x9f\x8c\x8d";const char *id="3EB01234567890ABCDEF";
+ assert(wa_messenger_send(m,"34222222222@s.whatsapp.net",id,message,sizeof message-1));assert(!wa_messenger_send(m,"34222222222@s.whatsapp.net",id,message,sizeof message-1));
+ char qid[128];copy(qid,sizeof qid,m->query);t=iq("result",qid,NULL);wa_node *us=wa_node_add(t,t->root,"usync");list=wa_node_add(t,us,"list");user(t,list,"34222222222@s.whatsapp.net","22222222@lid",0);user(t,list,"34111111111@s.whatsapp.net","11111111@lid",1);assert(wa_messenger_node(m,t->root)&&m->count==2);wa_tree_free(t);
+ copy(qid,sizeof qid,m->query);t=iq("result",qid,NULL);list=wa_node_add(t,t->root,"list");bundle(t,list,"22222222:0@lid",&bi,bob);bundle(t,list,"11111111:0@lid",&pi,primary);assert(wa_messenger_node(m,t->root)&&m->phase==3);wa_tree_free(t);
+ t=captured(&c);assert(!strcmp(t->root->tag,"message")&&!strcmp(wa_node_get(t->root,"to"),"22222222@lid")&&wa_node_child(t->root,"device-identity"));
+ wa_node *participants=wa_node_child(t->root,"participants");size_t decrypted=0;
+ for(wa_node *to=participants->child;to;to=to->next){const char *jid=wa_node_get(to,"jid");wa_node *enc=wa_node_child(to,"enc");assert(!strcmp(wa_node_get(enc,"type"),"pkmsg"));uint8_t plain[8192];size_t n=0;
+  int isown=strstr(jid,"11111111")!=NULL;assert(wa_signal_decrypt(isown?primary:bob,"11111111:1@lid",1,enc->data,enc->data_len,plain,sizeof plain,&n)>=0);
+  char text[WA_TEXT_MAX+1],dest[128]="";int own=0;unsigned pad=plain[n-1];assert(pad&&pad<=16);assert(decode_text(plain,n-pad,text,dest,&own,0)&&!strcmp(text,(const char*)message)&&own==isown);if(own)assert(!strcmp(dest,"34222222222@s.whatsapp.net"));decrypted++;
+ }assert(decrypted==2);wa_tree_free(t);
+ t=wa_tree_create();wa_node *acknode=wa_node_add(t,NULL,"ack");assert(wa_node_attr(acknode,"id",id)&&wa_node_attr(acknode,"class","message"));assert(wa_messenger_node(m,t->root)&&!m->pending);wa_tree_free(t);clear_events(m);
+ /* Restart both peers. The reply must use persisted ratchet state, not a new session. */
+ wa_messenger_free(m);wa_signal_free(bob);m=wa_messenger_create(&ai,&a,"11111111:1@lid",capture_node,&c);bob=wa_signal_create(&bi,&b);assert(m&&bob);
+ uint8_t encoded[128];size_t en=0;const uint8_t reply[]="Respuesta cifrada";assert(pb(1,reply,sizeof reply-1,encoded,sizeof encoded,&en));encoded[en++]=1;
+ uint8_t ct[4096];size_t cn=0;int pk=0;assert(wa_signal_encrypt(bob,"11111111:1@lid",encoded,en,ct,sizeof ct,&cn,&pk)>=0&&!pk);
+ t=wa_tree_create();wa_node *root=wa_node_add(t,NULL,"message");assert(wa_node_attr(root,"id","incoming-test")&&wa_node_attr(root,"from","22222222:0@lid"));wa_node *enc=data(t,root,"enc",ct,cn);assert(enc&&wa_node_attr(enc,"type","msg"));assert(wa_messenger_node(m,root));
+ const wa_message_event *e=wa_messenger_event(m);assert(e&&!strcmp(e->kind,"message")&&!strcmp(e->text,(const char*)reply)&&!strcmp(e->jid,"34222222222@s.whatsapp.net"));wa_tree_free(t);clear_events(m);
+ /* Reordered receipts must remain distinguishable. UI persists monotonic state. */
+ t=wa_tree_create();root=wa_node_add(t,NULL,"receipt");assert(wa_node_attr(root,"id",id)&&wa_node_attr(root,"from","22222222@lid")&&wa_node_attr(root,"type","read"));assert(wa_messenger_node(m,root));assert(wa_messenger_event(m)->state==4);wa_tree_free(t);clear_events(m);
+ /* TOFU is pinned; no silent key replacement on a changed identity. */
+ uint8_t pre[32];assert(wa_signal_prekey(primary,51,pre));assert(wa_signal_bundle(m->signal,"22222222:0@lid",pi.registration_id,pi.identity_public,1,pi.prekey_public,pi.prekey_signature,51,pre)==-1010);
+ m->ready=1;assert(!wa_messenger_send(m,"bad@evil",id,message,sizeof message-1));uint8_t bad[]={0xc0,0x80};assert(!wa_messenger_send(m,"34222222222@s.whatsapp.net",id,bad,sizeof bad));
+ wa_messenger_free(m);wa_signal_free(bob);wa_signal_free(primary);wa_storage_posix_close(&a);wa_storage_posix_close(&b);wa_storage_posix_close(&p);cleanup(pa);cleanup(pbdir);cleanup(pp);assert(!rmdir(dir));
+ puts("PASS: prekey publication, LID device lookup, all-device Signal encryption, own-device copy, UTF-8 text, bidirectional persistent ratchet, read receipts, identity-change rejection and malformed-input rejection");return 0;
+}
