@@ -15,7 +15,7 @@ struct wa_messenger {
  wa_identity me;wa_storage io;wa_signal *signal;wa_inbox *inbox;int inbox_replayed;wa_send_node send;void *user;
  char own[128],lid[128];
  int history_mode;
- uint64_t sync_due,last_key_request;unsigned sync_sequence;char sync_query[48];
+ uint64_t sync_due,last_key_request,sync_requested_version;int sync_more;unsigned sync_sequence;char sync_query[48];
  int ready,boot,pending,phase;uint64_t now,deadline;
  char peer[128],route[128],id[96],query[128];uint8_t text[WA_TEXT_MAX+1];size_t text_len;
  struct {char jid[128];int own;} devices[DEVICES];size_t count;
@@ -379,9 +379,10 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
   if(m->sync_query[0]&&!strcmp(id,m->sync_query)){
    m->sync_query[0]=0;
    if(type&&!strcmp(type,"result")){
-    int ok=wa_state_collect(&m->io,node);
-    event(m,"state-sync","","","",ok?0:-1);
-   }
+    int collected=wa_state_collect(&m->io,node);
+    m->sync_more=collected>1;
+    event(m,"state-sync","","","",collected?0:-1);
+   }else event(m,"state-sync","","","",-2);
    return 1;
   }
   if(!strcmp(id,"legacy-prekeys-count")&&m->boot==1){uint32_t count=0;const char *value=wa_node_get(wa_node_child(node,"count"),"value");if(!type||strcmp(type,"result")||!value||strspn(value,"0123456789")!=strlen(value))goto boot_error;count=(uint32_t)strtoul(value,NULL,10);if(!(count>16?activate(m):upload(m)))goto boot_error;return 1;}
@@ -409,8 +410,10 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
 void wa_messenger_tick(wa_messenger *m,uint64_t now){if(!m)return;int first=m->now==0;m->now=now;
  /* The first tick establishes the external monotonic clock origin. */
  if(first&&m->deadline)m->deadline+=now;
- if(m->ready&&now>=m->sync_due){
+ if(m->ready&&(now>=m->sync_due||(m->sync_more&&wa_state_version(&m->io)>m->sync_requested_version))){
   m->sync_due=now+120000;
+  m->sync_more=0;
+  m->sync_requested_version=wa_state_version(&m->io);
   snprintf(m->sync_query,sizeof m->sync_query,"legacy-state-%u",++m->sync_sequence);
   if(!send(m,wa_state_query(&m->io,m->sync_query)))m->sync_query[0]=0;
  }

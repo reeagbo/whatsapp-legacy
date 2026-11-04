@@ -37,5 +37,17 @@ int main(void) {
  assert(wa_history_task(&io,0,stored,sizeof stored,&n)==1&&n==sizeof inline_task);assert(wa_history_task(&io,1,stored,sizeof stored,&n)==0);
  assert(!wa_history_done(&io,0,media_task,sizeof media_task));assert(wa_history_done(&io,0,inline_task,sizeof inline_task));assert(wa_history_task(&io,0,stored,sizeof stored,&n)==0);
  wa_storage_posix_close(&io);assert(!rmdir(folder));
+ /* A remote chat removal carries the last included message in Unix seconds. */
+ const uint8_t index[]="[\"deleteChat\",\"123456789@lid\",\"1\"]";
+ uint8_t action[64],operation[32],range[16];size_t an=0,on=0,rn=0;
+ assert(put_number(1,1700000000ULL,range,sizeof range,&rn));
+ assert(put_bytes(1,range,rn,operation,sizeof operation,&on));
+ assert(put_number(1,1700000001000ULL,action,sizeof action,&an));
+ assert(put_bytes(22,operation,on,action,sizeof action,&an));
+ h=calloc(1,sizeof *h);assert(h);h->state_job=2;
+ assert(add_action(h,(wa_slice){index,sizeof index-1},(wa_slice){action,an}));
+ assert(wa_history_next(h,&e,&time)==1&&!strcmp(e.kind,"delete-chat")&&
+        !strcmp(e.jid,"123456789@lid")&&!strcmp(e.text,"1700000000999")&&time==1700000001000ULL);
+ assert(wa_history_next(h,&e,&time)==0);wa_history_free(h);
  puts("PASS: independent history media fixture, hashes/HMAC, inline decompression, original dates/status, names, aliases and durable replay/acknowledgement");return 0;
 }

@@ -307,10 +307,29 @@ class MainActivity : Activity() {
                 addView(label(chat.preview,14f,muted).apply { setSingleLine(true); ellipsize=android.text.TextUtils.TruncateAt.END; setPadding(0,dp(5),0,0) })
             },LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1f))
             row.addView(label(if(chat.time>0) SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(chat.time)) else "",12f,muted))
-            row.setOnClickListener { showChat(chat.jid) }; row.setOnLongClickListener { editName(chat.jid); true }; rows.addView(row)
+            row.setOnClickListener { showChat(chat.jid) }; row.setOnLongClickListener { chatActions(chat.jid); true }; rows.addView(row)
             rows.addView(View(this).apply { setBackgroundColor(palette(R.color.wa_divider)) },LinearLayout.LayoutParams(-1,dp(1)))
         }
         page.addView(ScrollView(this).apply { addView(rows) },LinearLayout.LayoutParams(-1,0,1f))
+    }
+    private fun chatActions(jid: String) {
+        AlertDialog.Builder(this).setTitle(title(jid))
+            .setItems(arrayOf("Editar nombre", "Eliminar conversación")) { _, which ->
+                if(which==0)editName(jid) else confirmChatDeletion(jid)
+            }.show()
+    }
+    private fun confirmChatDeletion(jid: String) {
+        AlertDialog.Builder(this).setTitle("Eliminar conversación")
+            .setMessage("Se borrarán de Legacy los mensajes guardados de ${title(jid)}. La conversación seguirá en los demás dispositivos.")
+            .setNegativeButton("Cancelar",null)
+            .setPositiveButton("Eliminar") { _, _ ->
+                try {
+                    store.deleteChatLocally(jid)
+                    if(historyRequestPeer?.let { store.resolve(it)==store.resolve(jid) }==true)
+                        finishHistoryPage(false)
+                    refreshConversation()
+                } catch(error: Exception) { storageFailure(error) }
+            }.show()
     }
     private fun newConversation() {
         val form=column().apply { setPadding(dp(24),dp(8),dp(24),0) }
@@ -554,6 +573,12 @@ class MainActivity : Activity() {
                                 if(Thread.currentThread().isInterrupted)throw java.io.InterruptedIOException()
                                 val e=nativeHistoryNext(handle) ?: break
                                 val time=e[5].toLong()
+                                val deletion=e[0] in listOf("delete","delete-chat","clear-chat")
+                                if(deletion && e[2].endsWith("@lid")) {
+                                    val phone=active.resolve(e[2])
+                                    if(phone!=null && phone.endsWith("@s.whatsapp.net") && !db.link(e[2],phone))
+                                        debugLog.add("SYNC_DELETE_ALIAS_CONFLICT")
+                                }
                                 when(e[0]) {
                                     "alias" -> if(!db.link(e[1],e[2]))throw java.io.IOException("Conflicting history address")
                                     "chat" -> {
@@ -562,7 +587,10 @@ class MainActivity : Activity() {
                                             containsRequestedPeer=true
                                     }
                                     "delete", "edit" -> db.applyMessageMutation(e[2],e[1],e[4]=="1",e[0],time,e[3])
-                                    "delete-chat", "clear-chat" -> db.applyChatDeletion(e[2],e[3].toLong(),time,e[0]=="delete-chat")
+                                    "delete-chat", "clear-chat" -> {
+                                        db.applyChatDeletion(e[2],e[3].toLong(),time,e[0]=="delete-chat")
+                                        debugLog.add("SYNC_CHAT_REMOVAL kind=${e[0]}")
+                                    }
                                     "name" -> db.learnName(e[2],e[3])
                                     "message", "sent-copy" -> { db.append(e[1],e[2],e[3],e[0]=="sent-copy",e[4].toInt(),time,true);importedMessages++ }
                                 }

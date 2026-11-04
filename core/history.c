@@ -139,10 +139,13 @@ static int state_task(const wa_storage *io,const wa_node *node,int snapshot,uint
  OPENSSL_cleanse(task,cap);free(task);return ok;
 }
 int wa_state_collect(const wa_storage *io,const wa_node *result) {
+ int more=0;
  wa_node *sync=wa_node_child(result,"sync");
  for(wa_node *collection=sync?sync->child:NULL;collection;collection=collection->next) {
   const char *name=wa_node_get(collection,"name");
   if(strcmp(collection->tag,"collection")||!name||strcmp(name,STATE_COLLECTION))continue;
+  const char *has_more=wa_node_get(collection,"has_more_patches");
+  if(has_more&&!strcmp(has_more,"true"))more=1;
   const char *version=wa_node_get(collection,"version");
   uint64_t fallback=version?strtoull(version,NULL,10):0;
   wa_node *snapshot=wa_node_child(collection,"snapshot");
@@ -151,7 +154,7 @@ int wa_state_collect(const wa_storage *io,const wa_node *result) {
   for(wa_node *p=patches?patches->child:collection->child;p;p=p->next)
    if(!strcmp(p->tag,"patch")&&!state_task(io,p,0,++fallback))return 0;
  }
- return 1;
+ return 1+more;
 }
 wa_tree *wa_state_query(const wa_storage *io,const char *id) {
  wa_tree *t=wa_tree_create();if(!t)return NULL;

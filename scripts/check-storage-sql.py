@@ -138,8 +138,19 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     assert db.execute(visible, (pn, pn)).fetchone()[0] == pn
     db.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?)', ('new', pn, 'Visible', 0, 0, 101, ''))
     assert [row[0] for row in db.execute(visible, ('', ''))] == [pn]
-    db.execute('DELETE FROM messages WHERE peer=?', (pn,))
+    # A replayed remote delete removes the old rows, preserving later traffic.
+    for _ in range(2):
+        for sql,bound in zip(delete,[(pn,),(100,500,1,pn),(pn,pn),(pn,pn),(pn,)]):
+            db.execute(sql,bound)
+    assert [row[0] for row in db.execute(visible, ('', ''))] == [pn]
+    # A local delete advances the cutoff and removes the whole visible chat.
+    for sql,bound in zip(delete,[(pn,),(200,200,1,pn),(pn,pn),(pn,pn),(pn,)]):
+        db.execute(sql,bound)
     assert db.execute(visible, ('', '')).fetchall() == []
+    assert db.execute(visible, (pn, pn)).fetchone() is None
+    assert db.execute(cutoff,(pn,'101')).fetchone() == (1,)
+    assert db.execute(cutoff,(pn,'201')).fetchone() is None
+    assert db.execute(cutoff,(phone,'101')).fetchone() is None
     db.commit()
     db.close()
 print('PASS: v1/v2/v3 upgrades to v4, rollback, reopen, Unicode, peer/direction dedup, receipt attribution, alias merges and persistent deletion markers. No compilation performed.')

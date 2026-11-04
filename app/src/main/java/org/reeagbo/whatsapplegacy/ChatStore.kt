@@ -138,6 +138,14 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
+    fun deleteChatLocally(address: String) = historyTransaction {
+        val peer=resolve(address)
+        val now=System.currentTimeMillis()
+        val latest=readableDatabase.rawQuery("SELECT MAX(time) FROM messages WHERE peer=?",arrayOf(peer)).use {
+            if(it.moveToFirst())it.getLong(0) else 0L
+        }
+        applyChatDeletion(peer,maxOf(now,latest),now,true)
+    }
     fun applyChatDeletion(address: String, cutoff: Long, changed: Long, removeChat: Boolean) {
         val peer=resolve(address);val db=writableDatabase
         db.beginTransaction()
