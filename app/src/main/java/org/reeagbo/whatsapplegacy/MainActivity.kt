@@ -51,9 +51,13 @@ import java.util.concurrent.TimeUnit
 class MainActivity : Activity() {
     private external fun nativeHistoryRequest(handle: Long, jid: String, anchor: String, own: Boolean, time: Long, id: String): Boolean
     private external fun nativeHistoryTask(handle: Long, slot: Int): ByteArray?
-    private external fun nativeHistoryDone(handle: Long, slot: Int, task: ByteArray): Boolean
+    private external fun nativeHistoryDone(handle: Long, slot: Int, task: ByteArray, version: Long): Boolean
     private external fun nativeHistoryPath(task: ByteArray): String?
-    private external fun nativeHistoryOpen(task: ByteArray, encrypted: ByteArray): Long
+    private external fun nativeHistoryOpen(session: Long, task: ByteArray, encrypted: ByteArray, missing: Array<String?>): Long
+    private external fun nativeIdentityPhone(path: String): String?
+    private external fun nativeHistoryOrder(task: ByteArray): Long
+    private external fun nativeHistoryVersion(cursor: Long): Long
+    private external fun nativeSyncKey(session: Long, key: String, id: String): Boolean
     private external fun nativeHistoryNext(handle: Long): Array<String>?
     private external fun nativeHistoryClose(handle: Long)
     private external fun nativeResolve(handle: Long, jid: String): String?
@@ -118,7 +122,7 @@ class MainActivity : Activity() {
             val available = networkAvailable()
             val restored = available && !networkWasAvailable
             networkWasAvailable = available
-            if (restored && automaticReconnect && !destroyed && File(filesDir,"identity.v1").exists()) {
+            if (restored && automaticReconnect && !destroyed && activeIdentity().exists()) {
                 debugLog.add("NETWORK_RESTORED reconnect=${connection==null}")
                 reconnectPolicy.reset()
                 if(connection==null) start("")
@@ -139,6 +143,11 @@ class MainActivity : Activity() {
     private var historyBusy=false
     private var historyRequestId: String? = null
     private var historyRequestPeer: String? = null
+    private var historyWindow = 100
+    private var renderedMessages: List<ChatStore.Message> = emptyList()
+    private var restoringScroll = false
+    private var firstChatRender = false
+    private var lastScrollTouch = 0L
     private var lastHistoryAttempt=0L
     @Suppress("DEPRECATION")
     private fun networkAvailable() = (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).activeNetworkInfo?.isConnected == true
@@ -263,7 +272,7 @@ class MainActivity : Activity() {
         setContentView(page)
     }
     private fun showList() {
-        conversation=null; messageList=null; messageScroll=null; compose=null; sendButton=null
+        conversation=null; renderedMessages=emptyList(); messageList=null; messageScroll=null; compose=null; sendButton=null
         newPage(); header("Conversaciones",false)
         val rows=column()
         val chats=store.chats()
@@ -303,9 +312,24 @@ class MainActivity : Activity() {
     private fun showChat(jid: String) {
         conversation=store.resolve(jid)
         debugLog.add("CHAT_OPEN selected=${DebugLog.addressHint(jid)} canonical=${DebugLog.addressHint(conversation!!)}")
+        historyWindow=100
+        renderedMessages=emptyList()
+        firstChatRender=true
+        lastScrollTouch=0L
         newPage();header(title(conversation!!),true)
         messageList=column().apply { setPadding(dp(12),dp(16),dp(12),dp(16)) }
-        messageScroll=ScrollView(this).apply { isFillViewport=true;addView(messageList) }
+        messageScroll=ScrollView(this).apply {
+            isFillViewport=true
+            addView(messageList)
+            setOnTouchListener { _, _ -> lastScrollTouch=SystemClock.elapsedRealtime();false }
+            viewTreeObserver.addOnScrollChangedListener {
+                if(this===messageScroll && !restoringScroll && scrollY<=dp(24)
+                    && lastScrollTouch!=0L && SystemClock.elapsedRealtime()-lastScrollTouch<1_500L) {
+                    lastScrollTouch=0L
+                    loadOlder(false)
+                }
+            }
+        }
         page.addView(messageScroll,LinearLayout.LayoutParams(-1,0,1f))
         val bar=LinearLayout(this).apply { gravity=Gravity.BOTTOM;setPadding(dp(10),dp(8),dp(10),dp(10));setBackgroundColor(surface) }
         compose=EditText(this).apply { hint="Escribe un mensaje"; minLines=1;maxLines=5;textSize=17f;setTextColor(ink);setHintTextColor(muted);background=shape(inputSurface,24);setPadding(dp(16),dp(12),dp(16),dp(12));isSaveEnabled=false;inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES }
@@ -314,18 +338,64 @@ class MainActivity : Activity() {
         bar.addView(sendButton,LinearLayout.LayoutParams(dp(54),dp(54)).apply { leftMargin=dp(8) });page.addView(bar)
         refreshMessages();updateSend()
     }
-    private fun refreshMessages() {
-        val jid=conversation?:return;val list=messageList?:return;list.removeAllViews()
-        for(message in store.messages(jid)) {
+    private fun refreshMessages(preservePosition: Boolean = false) {
+        val jid=conversation ?: return
+        val list=messageList ?: return
+        val scroll=messageScroll ?: return
+        val messages=store.messages(jid,historyWindow)
+        if(!firstChatRender && messages==renderedMessages) return
+        val previousY=scroll.scrollY
+        val anchor=(0 until list.childCount).map { list.getChildAt(it) }
+            .firstOrNull { it.tag!=null && it.bottom>previousY }
+        val anchorKey=anchor?.tag
+        val anchorOffset=anchor?.top?.minus(previousY) ?: 0
+        val atBottom=firstChatRender || previousY+scroll.height>=list.height-dp(48)
+        firstChatRender=false
+        restoringScroll=true
+        list.removeAllViews()
+        renderedMessages=messages
+        if(messages.isNotEmpty()) list.addView(Button(this).apply {
+            text="Cargar mensajes anteriores"
+            setOnClickListener { loadOlder(true) }
+        })
+        for(message in messages) {
             val line=LinearLayout(this).apply { gravity=if(message.outgoing)Gravity.END else Gravity.START;setPadding(0,dp(4),0,dp(4)) }
             val bubble=column().apply { background=shape(if(message.outgoing)outgoingSurface else surface);setPadding(dp(13),dp(10),dp(13),dp(8));minimumWidth=dp(104) }
             bubble.addView(label(message.text,17f).apply { maxWidth=(resources.displayMetrics.widthPixels*0.73).toInt();setTextIsSelectable(true) })
             val state=if(!message.outgoing) "" else when(message.status) { 0->"Pendiente";1->"Enviado · sin confirmar";2->"Aceptado";3->"Entregado";4->"Leído";-2->"Sin confirmación";else->"No enviado" }
             bubble.addView(label(SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(message.time))+if(state.isBlank()) "" else " · $state",11f,muted).apply { gravity=Gravity.END;setPadding(0,dp(6),0,0) })
             if(message.outgoing&&message.status<0&&message.note.isNotBlank())bubble.addView(label(message.note,12f,muted).apply { maxWidth=(resources.displayMetrics.widthPixels*0.73).toInt() })
+            line.tag=message.outgoing to message.id
             line.addView(bubble);list.addView(line)
         }
-        messageScroll?.post { messageScroll?.fullScroll(View.FOCUS_DOWN) }
+        scroll.post {
+            if(scroll===messageScroll) {
+                val replacement=(0 until list.childCount).map { list.getChildAt(it) }
+                    .firstOrNull { anchorKey!=null && it.tag==anchorKey }
+                if(atBottom && !preservePosition) scroll.scrollTo(0,list.height)
+                else scroll.scrollTo(0,replacement?.top?.minus(anchorOffset) ?: previousY)
+                restoringScroll=false
+            }
+        }
+    }
+    private fun loadOlder(manual: Boolean) {
+        val jid=conversation ?: return
+        val oldest=renderedMessages.firstOrNull() ?: return
+        try {
+            if(store.hasEarlier(jid,oldest)) {
+                if(historyWindow<5000) {
+                    historyWindow=(historyWindow+100).coerceAtMost(5000)
+                    refreshMessages(true)
+                }
+                return
+            }
+            requestHistory(false,manual)
+        } catch(error: Exception) { storageFailure(error) }
+    }
+    private fun finishHistoryPage(ok: Boolean) {
+        historyRequestPeer?.let { store.endHistoryPage(it,ok) }
+        historyRequestPeer=null
+        historyRequestId=null
     }
     private fun updateSend() { sendButton?.isEnabled=connected&&pendingMessage==null;sendButton?.alpha=if(connected&&pendingMessage==null)1f else .4f }
     private fun sendText() {
@@ -355,21 +425,21 @@ class MainActivity : Activity() {
             }
         }
         for(e in events) {
-            if(e.size!=5)continue;val state=e[4].toIntOrNull()?:0
+            if(e.size<5)continue;val state=e[4].toIntOrNull()?:0
             when(e[0]) {
                 "ready" -> { connected=true;statusText="Conectado · texto cifrado";reconnectPolicy.connected(SystemClock.elapsedRealtime()) }
                 "status" -> if(e[1]==historyRequestId) {
-                    if(state<0) { statusText="No se confirmó la solicitud de historial: ${e[3]}";historyRequestId=null }
+                    if(state<0) { statusText="No se confirmó la solicitud de historial: ${e[3]}";finishHistoryPage(false) }
                     else if(state>=2) statusText="Solicitud de historial aceptada; esperando al móvil principal"
                 } else { val matched=store.status(e[1],state,e[3],e[2]);if(matched&&e[1]==pendingMessage&&(state<0||state>=2))pendingMessage=null }
                 "message", "sent-copy" -> if(e[1].isNotBlank()&&e[2].isNotBlank()) {
                     debugLog.hide(e[2].substringBefore('@'))
                     debugLog.add("MESSAGE_TARGET kind=${e[0]} event=${DebugLog.addressHint(e[2])} stored=${DebugLog.addressHint(store.resolve(e[2]))}")
-                    store.append(e[1],e[2],e[3],e[0]=="sent-copy",state)
+                    store.append(e[1],e[2],e[3],e[0]=="sent-copy",state,e.getOrNull(5)?.toLongOrNull()?.takeIf { it>0 } ?: System.currentTimeMillis())
                     // The native inbox keeps the text until this SQLite commit succeeds.
                     connection?.stored(e[1],e[2],e[0]=="sent-copy")
                 }
-                "history", "history-status" -> { statusText=e[3];if(state<0) { historyRequestId=null;Toast.makeText(this,e[3],Toast.LENGTH_LONG).show() } }
+                "history", "history-status" -> { statusText=e[3];if(state<0) { finishHistoryPage(false);Toast.makeText(this,e[3],Toast.LENGTH_LONG).show() } }
                 "contact" -> if(e[2].isNotBlank()) store.learnName(e[2],e[3])
                 "notice" -> { statusText=e[3];if(state<0)Toast.makeText(this,e[3],Toast.LENGTH_LONG).show() }
             }
@@ -377,24 +447,25 @@ class MainActivity : Activity() {
         statusLabel.text=statusText
         refreshConversation()
         scheduleContacts()
-        scheduleHistory()
+        scheduleHistory(events.any { it.firstOrNull() in listOf("state-sync","history","ready") })
         updateSend()
         } catch (error: Exception) { storageFailure(error) }
     }
-    private fun requestHistory(full: Boolean) {
+    private fun requestHistory(full: Boolean, manual: Boolean = true) {
         val active=connection
-        if(!connected || active==null) { Toast.makeText(this,"Conecta la sesión primero",Toast.LENGTH_SHORT).show();return }
-        if(historyBusy || historyRequestId!=null) { Toast.makeText(this,"Ya hay una recuperación en curso",Toast.LENGTH_SHORT).show();return }
+        if(!connected || active==null) { if(manual)Toast.makeText(this,"Conecta la sesión primero",Toast.LENGTH_SHORT).show();return }
+        if(historyBusy || historyRequestId!=null) { if(manual)Toast.makeText(this,"Ya hay una recuperación en curso",Toast.LENGTH_SHORT).show();return }
         val jid=if(full) "" else conversation ?: run { Toast.makeText(this,"Abre la conversación que quieres recuperar",Toast.LENGTH_SHORT).show();return }
         val anchor=if(full) null else store.historyAnchor(jid)
         if(!full && anchor==null) { Toast.makeText(this,"Hace falta un mensaje como punto de partida",Toast.LENGTH_SHORT).show();return }
         val id="3EB0"+UUID.randomUUID().toString().replace("-","").uppercase(Locale.ROOT)
+        if(anchor!=null && !store.beginHistoryPage(jid,anchor,manual)) return
         historyRequestId=id;historyRequestPeer=if(full)null else jid
-        if(!active.requestHistory(jid,anchor,id)) { historyRequestId=null;Toast.makeText(this,"No se pudo iniciar la solicitud; espera a terminar el envío actual",Toast.LENGTH_LONG).show();return }
+        if(!active.requestHistory(jid,anchor,id)) { finishHistoryPage(false);if(manual)Toast.makeText(this,"No se pudo iniciar la solicitud; espera a terminar el envío actual",Toast.LENGTH_LONG).show();return }
         debugLog.add("HISTORY_REQUEST scope=${if(full) "conversations" else "older-messages"}")
         statusText="Historial solicitado al móvil principal";statusLabel.text=statusText
         handler.postDelayed({ if(historyRequestId==id && !destroyed) {
-            historyRequestId=null;statusText="El móvil principal aún no ha enviado historial. Puedes volver a solicitarlo."
+            finishHistoryPage(false);statusText="El móvil principal aún no ha enviado historial. Puedes volver a solicitarlo."
             statusLabel.text=statusText;debugLog.add("HISTORY_REQUEST_WAIT_EXPIRED")
         } },120_000L)
     }
@@ -406,11 +477,14 @@ class MainActivity : Activity() {
         val tasks=active.historyTasks()
         if(tasks.isEmpty())return
         historyBusy=true;lastHistoryAttempt=now
+        val requestedPeer=historyRequestPeer
+        val requestedId=historyRequestId
         historyWorker.execute {
-            var messages=0;var chats=0;var succeeded=0;var errorType: String?=null
+            var messages=0;var chats=0;var succeeded=0;var pageReceived=false;var errorType: String?=null;var stateFailed=false
             val db=ChatStore(applicationContext)
             try {
-                for((slot,task) in tasks) {
+                for((slot,task) in tasks.sortedBy { nativeHistoryOrder(it.second) }) {
+                    val stateTask=nativeHistoryOrder(task)!=Long.MAX_VALUE
                     if(Thread.currentThread().isInterrupted)break
                     var handle=0L
                     var stage="path"
@@ -435,9 +509,11 @@ class MainActivity : Activity() {
                         }
                         debugLog.add("HISTORY_DOWNLOAD_COMPLETE bytes=${encrypted.size}")
                         stage="decode"
-                        handle=nativeHistoryOpen(task,encrypted)
+                        val missing=arrayOfNulls<String>(1)
+                        handle=active.openHistory(task,encrypted,missing)
+                        missing[0]?.let { active.requestSyncKey(it) }
                         if(handle==0L)throw java.io.IOException("History integrity or format check failed")
-                        var importedMessages=0;var importedChats=0
+                        var importedMessages=0;var importedChats=0;var containsRequestedPeer=false
                         stage="sqlite"
                         db.historyTransaction {
                             while(true) {
@@ -446,19 +522,29 @@ class MainActivity : Activity() {
                                 val time=e[5].toLong()
                                 when(e[0]) {
                                     "alias" -> if(!db.link(e[1],e[2]))throw java.io.IOException("Conflicting history address")
-                                    "chat" -> { db.historyChat(e[2],e[3],time);importedChats++ }
+                                    "chat" -> {
+                                        db.historyChat(e[2],e[3],time);importedChats++
+                                        if(requestedPeer!=null && db.resolve(e[2])==db.resolve(requestedPeer))
+                                            containsRequestedPeer=true
+                                    }
+                                    "delete", "edit" -> db.applyMessageMutation(e[2],e[1],e[4]=="1",e[0],time,e[3])
+                                    "delete-chat", "clear-chat" -> db.applyChatDeletion(e[2],e[3].toLong(),time,e[0]=="delete-chat")
                                     "name" -> db.learnName(e[2],e[3])
                                     "message", "sent-copy" -> { db.append(e[1],e[2],e[3],e[0]=="sent-copy",e[4].toInt(),time,true);importedMessages++ }
                                 }
                             }
                         }
+                        if(containsRequestedPeer)pageReceived=true
                         // Only a committed complete chunk may remove its durable task.
                         stage="acknowledge"
-                        val confirmed=active.historyDone(slot,task)
+                        val confirmed=active.historyDone(slot,task,nativeHistoryVersion(handle))
                         debugLog.add("HISTORY_CHUNK_COMMITTED chats=$importedChats messages=$importedMessages task_confirmed=$confirmed")
-                        messages+=importedMessages;chats+=importedChats;succeeded++
+                        if(!stateTask) { messages+=importedMessages;chats+=importedChats;succeeded++ }
                         if(!confirmed)throw java.io.IOException("History task acknowledgement unavailable")
-                    } catch(error: Exception) { errorType=error.javaClass.simpleName;debugLog.add("HISTORY_CHUNK_FAILED stage=$stage type=$errorType retained=true") }
+                    } catch(error: Exception) {
+                        if(stateTask)stateFailed=true else errorType=error.javaClass.simpleName
+                        debugLog.add("SYNC_CHUNK_FAILED state=$stateTask stage=$stage type=${error.javaClass.simpleName} retained=true")
+                    }
                     finally { if(handle!=0L)nativeHistoryClose(handle) }
                 }
             } catch(error: Exception) { errorType=error.javaClass.simpleName;debugLog.add("HISTORY_IMPORT_FAILED type=$errorType retained=true") }
@@ -466,11 +552,19 @@ class MainActivity : Activity() {
             handler.post {
                 if(!destroyed) {
                     historyBusy=false
-                    if(succeeded>0)historyRequestId=null
-                    statusText=if(errorType!=null) "Historial pendiente: no se pudo completar la importación; se conserva para reintentar" else "Historial importado: $chats conversaciones y $messages textos procesados"
-                    refreshConversation();statusLabel.text=statusText;scheduleContacts(true)
+                    if(pageReceived && requestedPeer!=null && requestedId==historyRequestId) {
+                        finishHistoryPage(true)
+                        if(conversation?.let { store.resolve(it)==store.resolve(requestedPeer) }==true) {
+                            historyWindow=(historyWindow+100).coerceAtMost(5000)
+                            refreshMessages(true)
+                        }
+                    } else if(succeeded>0 && historyRequestPeer==null && requestedId==historyRequestId) historyRequestId=null
+                    if(errorType!=null || succeeded>0)statusText=if(errorType!=null) "Historial pendiente: no se pudo completar la importación; se conserva para reintentar" else "Historial importado: $chats conversaciones y $messages textos procesados"
+                    val open=conversation
+                    if(open!=null && !store.containsChat(open))showList() else refreshConversation()
+                    statusLabel.text=statusText;scheduleContacts(true)
                     // Process later notifications, but do not loop on a failed chunk.
-                    if(errorType==null) { lastHistoryAttempt=0L;scheduleHistory() }
+                    if(errorType==null&&!stateFailed) { lastHistoryAttempt=0L;scheduleHistory() }
                     else handler.postDelayed({ if(!destroyed)scheduleHistory(true) },120_000L)
                 }
             }
@@ -504,7 +598,7 @@ class MainActivity : Activity() {
         phoneContacts=PhoneContacts(this)
         settingsBody=column().apply { setPadding(dp(20),dp(4),dp(20),dp(16)) }
         number=EditText(this).apply { hint="Tu número internacional, sin +";inputType=InputType.TYPE_CLASS_PHONE;setSingleLine(true);isSaveEnabled=false }
-        pair=Button(this).apply { text="Solicitar código de vinculación" }
+        pair=Button(this).apply { text="Solicitar código de vinculación con historial" }
         check=Button(this).apply { text="Conectar sesión guardada" }
         stop=Button(this).apply { text="Desconectar";isEnabled=false }
         code=label("",32f).apply { setTextIsSelectable(true) };output=label("",14f)
@@ -516,7 +610,20 @@ class MainActivity : Activity() {
         settingsBody.addView(Button(this).apply { text="Recuperar mensajes anteriores de este chat";setOnClickListener { requestHistory(false) } })
         settingsBody.addView(Button(this).apply { text="Reintentar importación pendiente";setOnClickListener { scheduleHistory(true) } })
         settingsBody.addView(save);settingsBody.addView(view)
-        pair.setOnClickListener { val phone=number.text.toString().trim();if(!phone.matches(Regex("^[1-9][0-9]{7,14}$")))number.error="Usa el prefijo de país y entre 8 y 15 dígitos" else { automaticReconnect=true;reconnectPolicy.reset();start(phone) } }
+        pair.setOnClickListener {
+            val phone=number.text.toString().trim()
+            val previous=activeIdentity()
+            val savedPhone=if(previous.exists())nativeIdentityPhone(previous.absolutePath) else null
+            when {
+                !phone.matches(Regex("^[1-9][0-9]{7,14}$")) -> number.error="Usa el prefijo de país y entre 8 y 15 dígitos"
+                savedPhone!=null && savedPhone!=phone -> number.error="Usa el mismo número de la sesión guardada"
+                else -> {
+                    automaticReconnect=true;reconnectPolicy.reset()
+                    val identity=if(savedPhone==null)previous else File(filesDir,"identity-sync-${UUID.randomUUID().toString().replace("-","")}.v1")
+                    start(phone,identity)
+                }
+            }
+        }
         check.setOnClickListener { automaticReconnect=true;reconnectPolicy.reset();start("") }
         stop.setOnClickListener {
             automaticReconnect=false
@@ -531,7 +638,7 @@ class MainActivity : Activity() {
         if(Build.VERSION.SDK_INT>=33) registerReceiver(networkReceiver,filter,Context.RECEIVER_NOT_EXPORTED)
         else registerReceiver(networkReceiver,filter)
         networkReceiverRegistered=true
-        if(File(filesDir,"identity.v1").exists())start("")
+        if(activeIdentity().exists())start("")
         if(!phoneContacts.allowed() && !getSharedPreferences("permissions",Context.MODE_PRIVATE).getBoolean("agenda_requested",false))
             handler.post { if(!destroyed) requestContactNames() }
     }
@@ -547,25 +654,31 @@ class MainActivity : Activity() {
         code.text = if (pairingCode.length == 8) "${pairingCode.take(4)}-${pairingCode.takeLast(4)}" else ""
         pair.isEnabled = !busy
         check.isEnabled = !busy
-        stop.isEnabled = busy || (automaticReconnect && File(filesDir,"identity.v1").exists())
+        stop.isEnabled = busy || (automaticReconnect && activeIdentity().exists())
         number.isEnabled = !busy
     }
 
-    private fun start(phone: String) {
+    private val identityPreferences by lazy { getSharedPreferences("companion",MODE_PRIVATE) }
+    private fun activeIdentity(): File {
+        val name=identityPreferences.getString("identity",null).orEmpty()
+        return File(filesDir,if(name.matches(Regex("identity-sync-[0-9a-f]{32}\\.v1")))name else "identity.v1")
+    }
+    private fun start(phone: String, identity: File = activeIdentity()) {
         sessionGeneration++
         connection?.cancel()
+        finishHistoryPage(false)
         connected=false
         updateSend()
         debugLog.hide(phone)
         val attempt = ++attempts
         debugLog.add("ATTEMPT $attempt BEGIN mode=${if (phone.isEmpty()) "check-session" else "pair-code"}")
-        val next = PairConnection(phone, attempt)
+        val next = PairConnection(phone, attempt, identity)
         connection = next
         render("Preparando claves y conexión segura…", "", true)
         next.connect()
     }
 
-    private inner class PairConnection(private val phone: String, private val attempt: Int) : WebSocketListener() {
+    private inner class PairConnection(private val phone: String, private val attempt: Int, private val identity: File) : WebSocketListener() {
         private val lock = Any()
         private var handle = 0L
         private var ws: WebSocket? = null
@@ -581,8 +694,15 @@ class MainActivity : Activity() {
         fun historyTasks(): List<Pair<Int,ByteArray>> = synchronized(lock) {
             if(finished || handle==0L) emptyList() else (0 until 8).mapNotNull { slot -> nativeHistoryTask(handle,slot)?.let { slot to it } }
         }
-        fun historyDone(slot: Int, task: ByteArray): Boolean = synchronized(lock) {
-            !finished && handle!=0L && nativeHistoryDone(handle,slot,task)
+        fun openHistory(task: ByteArray, encrypted: ByteArray, missing: Array<String?>): Long = synchronized(lock) {
+            if(finished || handle==0L) 0L else nativeHistoryOpen(handle,task,encrypted,missing)
+        }
+        fun requestSyncKey(key: String) = synchronized(lock) {
+            if(!finished && handle!=0L && nativeSyncKey(handle,key,UUID.randomUUID().toString().replace("-","").uppercase(Locale.ROOT)))
+                ws?.let { flush(it) }
+        }
+        fun historyDone(slot: Int, task: ByteArray, version: Long): Boolean = synchronized(lock) {
+            !finished && handle!=0L && nativeHistoryDone(handle,slot,task,version)
         }
         fun resolve(jid: String): String? = synchronized(lock) {
             if(finished || handle==0L) null else nativeResolve(handle,jid)
@@ -617,7 +737,7 @@ class MainActivity : Activity() {
 
         fun connect() = synchronized(lock) {
             log("NATIVE_CREATE_BEGIN")
-            handle = nativeCreate(File(filesDir, "identity.v1").absolutePath, phone)
+            handle = nativeCreate(identity.absolutePath, phone)
             drainNative()
             log("NATIVE_CREATE_END allocated=${handle != 0L}")
             if (handle == 0L) { finish("No se pudo preparar la sesión."); return@synchronized }
@@ -698,7 +818,20 @@ class MainActivity : Activity() {
                 return
             }
             if(state==5) {
-                if(!authenticated) { authenticated=true;deadline?.cancel(false);handler.post { if(connection===this)render(status,"",true) } }
+                if(!authenticated) {
+                    val previous=activeIdentity()
+                    if(identity!=previous) {
+                        val account=nativeIdentityPhone(previous.absolutePath)
+                        if(account==null || account!=nativeIdentityPhone(identity.absolutePath)) {
+                            finish("La vinculación no coincide con el número de la sesión guardada.");return
+                        }
+                        if(!identityPreferences.edit().putString("identity",identity.name).commit()) {
+                            finish("No se pudo guardar la nueva sesión. La sesión anterior se conserva.");return
+                        }
+                    }
+                    authenticated=true;deadline?.cancel(false)
+                    handler.post { if(connection===this)render(status,"",true) }
+                }
                 return
             }
             if (state < 0 || state == 6) { finish(status); return }
@@ -736,11 +869,11 @@ class MainActivity : Activity() {
                 if (connection === this && !destroyed) {
                     if (reconnect) {
                         log("AUTOMATIC_SESSION_RECONNECT")
-                        start("")
+                        start("",identity)
                     } else {
                         connection = null
                         connected=false
-                        pendingMessage=null;historyRequestId=null
+                        pendingMessage=null;finishHistoryPage(false)
                         try { store.interrupted() } catch(error: Exception) { storageFailure(error);return@post }
                         render(status, "", false)
                         val delay=if(retryNetwork)reconnectPolicy.nextDelay(SystemClock.elapsedRealtime()) else null

@@ -31,11 +31,11 @@ int wa_registration_payload(const wa_registration *in,uint8_t *out,size_t cap,si
   !string(&u,11,"en")||!string(&u,12,"US"))return 0;
  if(!number(&w,4,0))return 0;
  if(!number(&dv,1,10)||!number(&dv,2,15)||!number(&dv,3,7))return 0;
- if(!number(&sy,3,10240)||!number(&sy,4,1)||!number(&sy,7,1)||
+ if(!number(&sy,1,365)||!number(&sy,2,8)||!number(&sy,3,32)||!number(&sy,4,1)||!number(&sy,7,1)||
   !number(&sy,8,1)||!number(&sy,9,1)||!number(&sy,10,1)||
-  !number(&sy,11,1)||!number(&sy,12,1)||!number(&sy,14,1))return 0;
+  !number(&sy,11,1)||!number(&sy,12,1)||!number(&sy,14,1)||!number(&sy,16,1))return 0;
  if(!string(&d,1,in->operating_system)||!nested(&d,2,&dv)||
-  !number(&d,3,1) /* CHROME */||!number(&d,4,0) /* no full sync */||!nested(&d,5,&sy))return 0;
+  !number(&d,3,1) /* CHROME */||!number(&d,4,1) /* ask for initial history */||!nested(&d,5,&sy))return 0;
  uint8_t reg[4],id[3],typ[1]={5},digest[MD5_DIGEST_LENGTH],vers[64];
  be(in->registration_id,reg,4);be(in->signed_prekey_id,id,3);
  int k=snprintf((char*)vers,sizeof vers,"2.3000.1043857760");

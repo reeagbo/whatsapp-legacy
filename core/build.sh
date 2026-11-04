@@ -27,6 +27,6 @@ cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c histor
 ./test_messaging
 cc $FLAGS inbox.c test_inbox.c -lcrypto -o test_inbox
 ./test_inbox
-cc $FLAGS wire.c storage_posix.c test_history.c -lcrypto -lz -o test_history
+cc $FLAGS wire.c node.c storage_posix.c test_history.c -lcrypto -lz -o test_history
 ./test_history
 printf 'BUILD OK: run ./wa_probe to test a live connection (network required)\n'

@@ -355,7 +355,15 @@ int wa_pair_resolve(wa_pair_session *s,const char *jid,char out[128]) {
 }
 int wa_pair_history(wa_pair_session *s,const char *jid,const char *anchor,int own,uint64_t time,const char *id) {return s&&wa_messenger_history(s->messenger,jid,anchor,own,time,id);}
 int wa_pair_history_task(wa_pair_session *s,unsigned slot,uint8_t *out,size_t cap,size_t *n) {return s&&s->messenger?wa_history_task(&s->message_storage,slot,out,cap,n):-1;}
-int wa_pair_history_done(wa_pair_session *s,unsigned slot,const uint8_t *p,size_t n) {return s&&s->messenger&&wa_history_done(&s->message_storage,slot,p,n);}
+wa_history *wa_pair_history_open(wa_pair_session *s,const uint8_t *p,size_t n,const uint8_t *enc,size_t en,char missing[129]){
+ return s&&s->messenger?wa_history_open_sync(&s->message_storage,p,n,enc,en,missing):NULL;
+}
+int wa_pair_history_done(wa_pair_session *s,unsigned slot,const uint8_t *p,size_t n,uint64_t version) {
+ return s&&s->messenger&&wa_history_commit(&s->message_storage,slot,p,n,version);
+}
+int wa_pair_sync_key(wa_pair_session *s,const char *hex,const char *id){
+ return s&&wa_messenger_sync_key(s->messenger,hex,id);
+}
 void wa_pair_tick(wa_pair_session *s,uint64_t now) { if(s&&s->messenger)wa_messenger_tick(s->messenger,now); }
 const wa_message_event *wa_pair_event(const wa_pair_session *s) { return s?wa_messenger_event(s->messenger):NULL; }
 void wa_pair_event_done(wa_pair_session *s) {
@@ -699,6 +707,7 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
     if (wa_node_child(n, "link_code_companion_reg") && !handle_link(s, n))
       return 0;
 
+    if(s->state==5&&s->messenger&&type&&!strcmp(type,"server_sync"))return wa_messenger_node(s->messenger,n);
     return notification_ack(s, n);
   }
   if (!strcmp(n->tag, "stream:error") || !strcmp(n->tag, "failure")) {

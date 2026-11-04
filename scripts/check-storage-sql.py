@@ -13,7 +13,8 @@ source = (root/'app/src/main/java/org/reeagbo/whatsapplegacy/ChatStore.kt').read
 def literals(block):
     return re.findall(r'db\.execSQL\("([^"]+)"', block)
 new_schema = literals(source.split('private fun createMessages',1)[1].split('private fun createContacts',1)[0])
-contact_schema = literals(source.split('private fun createContacts',1)[1].split('override fun onUpgrade',1)[0])
+contact_schema = literals(source.split('private fun createContacts',1)[1].split('private fun createSync',1)[0])
+sync_schema = literals(source.split('private fun createSync',1)[1].split('override fun onUpgrade',1)[0])
 upgrade = source.split('override fun onUpgrade',1)[1].split('if (oldVersion < 3)',1)[0]
 migration2 = []
 for match in re.finditer(r'db\.execSQL\("([^"]+)"\)|createMessages\(db\)', upgrade):
@@ -24,7 +25,7 @@ chats = literals(source.split('override fun onCreate',1)[1].split('private fun c
 initial = [('out-1','a@s.whatsapp.net','Texto conservado: café 🌍',1,3,100,'Entregado'),
            ('in-1','b@s.whatsapp.net','Respuesta',0,0,101,'')]
 with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
-    for version in (1,2):
+    for version in (1,2,3):
         path = Path(folder)/f'v{version}.db'
         db = sqlite3.connect(path); db.execute('PRAGMA foreign_keys=ON')
         db.execute(chats)
@@ -32,14 +33,16 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
             db.execute(old_messages);db.execute('CREATE INDEX messages_peer_time ON messages(peer,time)')
         else:
             for sql in new_schema: db.execute(sql)
+        if version == 3:
+            for sql in contact_schema: db.execute(sql)
         db.executemany('INSERT INTO chats VALUES(?,?,?)',[('a@s.whatsapp.net','A',100),('b@s.whatsapp.net','B',101)])
         db.executemany('INSERT INTO messages VALUES(?,?,?,?,?,?,?)',initial);db.commit()
-        migration = (migration2 if version == 1 else []) + contact_schema
+        migration = (migration2 if version == 1 else []) + (contact_schema if version < 3 else []) + sync_schema
         db.execute('BEGIN')
         for sql in migration[:-1]: db.execute(sql)
         db.rollback()
         assert db.execute('SELECT * FROM messages ORDER BY id').fetchall() == sorted(initial)
-        assert db.execute("SELECT 1 FROM sqlite_master WHERE name IN ('messages_v1','aliases')").fetchone() is None
+        assert db.execute("SELECT 1 FROM sqlite_master WHERE name IN ('messages_v1','message_mutations','chat_deletions','history_pages')").fetchone() is None
         db.execute('BEGIN')
         for sql in migration: db.execute(sql)
         db.commit();db.close()
@@ -59,12 +62,13 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     # Exercise every production merge statement, with bound arguments in source order.
     merge = literals(source.split('fun link(',1)[1].split('fun interrupted()',1)[0])
     lid,pn='123456789@lid','34123456789@s.whatsapp.net'
-    args=[(lid,pn),(pn,lid),(lid,lid,pn),(pn,lid),(lid,pn),(pn,),
-          (lid,),(lid,),(pn,lid),(lid,)]
-    assert len(merge)==len(args)==10
+    args=[(lid,pn),(pn,lid),(lid,lid,pn),(pn,lid),(pn,pn,lid),(pn,lid),(lid,lid,lid,pn),
+          (pn,lid),(lid,pn),(pn,),(lid,),(lid,),(lid,),(lid,),(lid,),
+          (pn,),(pn,),(pn,pn,pn),(pn,lid),(lid,)]
+    assert len(merge)==len(args)==20
     path=Path(folder)/'merge.db'
     db=sqlite3.connect(path);db.execute('PRAGMA foreign_keys=ON')
-    for sql in [chats]+new_schema+contact_schema: db.execute(sql)
+    for sql in [chats]+new_schema+contact_schema+sync_schema: db.execute(sql)
     db.executemany('INSERT INTO chats VALUES(?,?,?)',[(lid,'Alias local',200),(pn,'Nombre manual',100)])
     rows=[('same',lid,'Duplicate alias',1,4,200,''),('same',pn,'First committed content',1,1,100,'Esperando'),
           ('same',lid,'Incoming independent',0,0,201,''),('other',lid,'Sólo LID 🌍',0,0,202,'')]
@@ -105,4 +109,29 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     db=sqlite3.connect(path)
     assert db.execute('SELECT text,status,time FROM messages WHERE peer=? AND id=? AND outgoing=1',(pn,'same')).fetchone()==('First committed content',4,25)
     db.close()
-print('PASS: v1/v2 upgrades to v3, rollback, reopen, Unicode, peer/direction dedup, receipt attribution, atomic LID/PN merges, names and delivery preservation. No compilation performed.')
+    db=sqlite3.connect(path)
+    db.execute('PRAGMA foreign_keys=ON')
+    delete = literals(source.split('fun applyChatDeletion',1)[1].split('fun beginHistoryPage',1)[0])
+    for sql,bound in zip(delete,[(pn,),(100,500,0,pn),(pn,pn),(pn,pn),(pn,)]):
+        if not sql.startswith("DELETE FROM chats"):
+            db.execute(sql,bound)
+    assert db.execute('SELECT COUNT(*) FROM chats WHERE jid=?',(pn,)).fetchone()==(1,)
+    assert db.execute('SELECT COUNT(*) FROM messages WHERE peer=? AND time<=100',(pn,)).fetchone()==(0,)
+    cutoff=re.search(r'"(SELECT 1 FROM chat_deletions WHERE peer=\? AND cutoff>=\?)"',source).group(1)
+    assert db.execute(cutoff,(pn,'100')).fetchone()==(1,)
+    assert db.execute(cutoff,(pn,'101')).fetchone() is None
+    # Delete and edit markers survive a LID merge even when the PN already has an edit.
+    mutations=literals(source.split('fun applyMessageMutation',1)[1].split('fun applyChatDeletion',1)[0])
+    db.execute(mutations[0],(phone,'gone',0,'edit',7,'stale'))
+    db.execute(mutations[0],(second,'gone',0,'delete',8,''))
+    db.execute(mutations[0],(phone,'edited',1,'edit',5,'older'))
+    db.execute(mutations[0],(second,'edited',1,'edit',8,'newer'))
+    db.execute('DELETE FROM aliases WHERE lid=?',(second,))
+    for sql,bound in zip(merge,args):
+        db.execute(sql,tuple(second if v==lid else phone if v==pn else v for v in bound))
+    assert db.execute('SELECT kind,text FROM message_mutations WHERE peer=? AND id=? AND outgoing=0',(phone,'gone')).fetchone()==('delete','')
+    assert db.execute('SELECT kind,text FROM message_mutations WHERE peer=? AND id=? AND outgoing=1',(phone,'edited')).fetchone()==('edit','newer')
+    assert db.execute('SELECT 1 FROM message_mutations WHERE peer=? AND id=? AND outgoing=1',(phone,'gone')).fetchone() is None
+    db.commit()
+    db.close()
+print('PASS: v1/v2/v3 upgrades to v4, rollback, reopen, Unicode, peer/direction dedup, receipt attribution, alias merges and persistent deletion markers. No compilation performed.')

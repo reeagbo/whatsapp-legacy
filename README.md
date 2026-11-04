@@ -328,3 +328,22 @@ La rama principal conserva el workflow exclusivamente manual. Si el conector
 no expone workflow_dispatch, se construye desde una rama temporal aislada,
 creada expresamente para esta solicitud; no se activan builds por guardar
 cambios en main. Se desactiva el disparador de esa rama al acabar.
+
+
+### Sincronización de conversaciones individuales
+
+Al subir en un chat se amplía la vista por páginas de 100 mensajes, manteniendo la
+posición. Cuando se agota la copia local, la app pide al móvil principal una página
+anterior a partir del mensaje más antiguo. Una página que no trae mensajes más
+antiguos detiene las peticiones automáticas para ese punto de partida.
+
+Una nueva vinculación solicita el historial inicial, que puede incluir chats sin
+actividad reciente. Si ya hay una sesión guardada, la app usa un perfil separado
+con el mismo número y lo activa tras autenticarlo. El móvil principal decide qué
+datos envía. También se conserva la solicitud manual para la sesión actual.
+
+La app consulta los cambios de borrado de chats individuales al conectar y
+reconectar. Las marcas de borrado se conservan al importar historial y al
+unificar un LID con su número. Se admite el vaciado completo del chat. Los
+vaciados que conservan los destacados quedan fuera. La copia inicial y la
+sincronización de borrados están pendientes de prueba con un móvil principal.
