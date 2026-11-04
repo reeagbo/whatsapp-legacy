@@ -6,8 +6,8 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
 /** Android conversation storage. Protocol/Signal state belongs to the C core. */
-class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 4) {
-    data class Chat(val jid: String, val name: String, val preview: String, val time: Long, val pushName: String)
+class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 5) {
+    data class Chat(val jid: String, val name: String, val preview: String, val time: Long, val pushName: String, val archived: Boolean)
     data class Message(val id: String, val peer: String, val text: String, val outgoing: Boolean,
                        val status: Int, val time: Long, val note: String)
     override fun onConfigure(db: SQLiteDatabase) {
@@ -19,6 +19,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         createMessages(db)
         createContacts(db)
         createSync(db)
+        addArchiveColumn(db)
     }
     private fun createMessages(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE messages(id TEXT NOT NULL, peer TEXT NOT NULL REFERENCES chats(jid), text TEXT NOT NULL, outgoing INTEGER NOT NULL, status INTEGER NOT NULL, time INTEGER NOT NULL, note TEXT NOT NULL, PRIMARY KEY(peer,id,outgoing))")
@@ -33,6 +34,9 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         db.execSQL("CREATE TABLE chat_deletions(peer TEXT PRIMARY KEY,cutoff INTEGER NOT NULL,changed INTEGER NOT NULL,remove_chat INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE history_pages(peer TEXT PRIMARY KEY,anchor_id TEXT NOT NULL,anchor_time INTEGER NOT NULL,anchor_outgoing INTEGER NOT NULL,state TEXT NOT NULL,retry_at INTEGER NOT NULL)")
     }
+    private fun addArchiveColumn(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+    }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
             // SQLiteOpenHelper wraps the migration in one transaction.
@@ -44,6 +48,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         }
         if (oldVersion < 3) createContacts(db)
         if (oldVersion < 4) createSync(db)
+        if (oldVersion < 5) addArchiveColumn(db)
     }
     fun addChat(address: String, name: String = "", updated: Long = System.currentTimeMillis()) {
         val jid = resolve(address)
@@ -58,11 +63,14 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
     fun containsChat(jid: String): Boolean = readableDatabase.rawQuery(
         "SELECT 1 FROM chats WHERE jid=?",arrayOf(resolve(jid))
     ).use { it.moveToFirst() }
-    fun chats(): List<Chat> = queryChats(null)
+    fun chats(archived: Boolean? = null): List<Chat> = queryChats(null,archived)
+    fun setArchived(jid: String, archived: Boolean) {
+        writableDatabase.update("chats",ContentValues().apply { put("archived",if(archived)1 else 0) },"jid=?",arrayOf(resolve(jid)))
+    }
     fun chat(jid: String): Chat? = queryChats(resolve(jid)).firstOrNull()
-    private fun queryChats(jid: String?): List<Chat> = readableDatabase.rawQuery(
-        "SELECT c.jid,c.name,COALESCE((SELECT text FROM messages m WHERE m.peer=c.jid ORDER BY time DESC,rowid DESC LIMIT 1),''),c.updated,COALESCE((SELECT name FROM contact_names n WHERE n.jid=c.jid),'') FROM chats c WHERE (?='' AND EXISTS(SELECT 1 FROM messages m WHERE m.peer=c.jid)) OR c.jid=? ORDER BY c.updated DESC", arrayOf(jid.orEmpty(),jid.orEmpty())
-    ).use { c -> buildList { while (c.moveToNext()) add(Chat(c.getString(0), c.getString(1), c.getString(2), c.getLong(3), c.getString(4))) } }
+    private fun queryChats(jid: String?, archived: Boolean? = null): List<Chat> = readableDatabase.rawQuery(
+        "SELECT c.jid,c.name,COALESCE((SELECT text FROM messages m WHERE m.peer=c.jid ORDER BY time DESC,rowid DESC LIMIT 1),''),c.updated,COALESCE((SELECT name FROM contact_names n WHERE n.jid=c.jid),''),c.archived FROM chats c WHERE (?='' AND (CAST(? AS INTEGER) IN (-1,c.archived)) AND EXISTS(SELECT 1 FROM messages m WHERE m.peer=c.jid)) OR c.jid=? ORDER BY c.updated DESC", arrayOf(jid.orEmpty(),when(archived) { true -> "1"; false -> "0"; null -> "-1" },jid.orEmpty())
+    ).use { c -> buildList { while (c.moveToNext()) add(Chat(c.getString(0), c.getString(1), c.getString(2), c.getLong(3), c.getString(4), c.getInt(5)!=0)) } }
     fun messages(jid: String, limit: Int = 100): List<Message> = readableDatabase.rawQuery(
         "SELECT id,peer,text,outgoing,status,time,note FROM messages WHERE peer=? ORDER BY time DESC,id DESC,outgoing DESC LIMIT ?", arrayOf(resolve(jid),limit.coerceIn(1,5000).toString())
     ).use { c -> buildList { while (c.moveToNext()) add(Message(c.getString(0),c.getString(1),c.getString(2),c.getInt(3)!=0,c.getInt(4),c.getLong(5),c.getString(6))) }.reversed() }
@@ -225,8 +233,8 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
             // Never silently move an already resolved conversation to another person.
             if (previous != lid) { db.setTransactionSuccessful(); return previous == pn }
             db.execSQL("INSERT INTO aliases(lid,pn) VALUES(?,?)", arrayOf(lid,pn))
-            db.execSQL("INSERT OR IGNORE INTO chats(jid,name,updated) SELECT ?,name,updated FROM chats WHERE jid=?", arrayOf(pn,lid))
-            db.execSQL("UPDATE chats SET name=CASE WHEN name='' THEN COALESCE((SELECT name FROM chats WHERE jid=?),'') ELSE name END,updated=MAX(updated,COALESCE((SELECT updated FROM chats WHERE jid=?),updated)) WHERE jid=?", arrayOf(lid,lid,pn))
+            db.execSQL("INSERT OR IGNORE INTO chats(jid,name,updated,archived) SELECT ?,name,updated,archived FROM chats WHERE jid=?", arrayOf(pn,lid))
+            db.execSQL("UPDATE chats SET name=CASE WHEN name='' THEN COALESCE((SELECT name FROM chats WHERE jid=?),'') ELSE name END,updated=MAX(updated,COALESCE((SELECT updated FROM chats WHERE jid=?),updated)),archived=MAX(archived,COALESCE((SELECT archived FROM chats WHERE jid=?),0)) WHERE jid=?", arrayOf(lid,lid,lid,pn))
             db.execSQL("INSERT OR IGNORE INTO message_mutations(peer,id,outgoing,kind,changed,text) SELECT ?,id,outgoing,kind,changed,text FROM message_mutations WHERE peer=?",arrayOf(pn,lid))
             db.execSQL("INSERT OR REPLACE INTO message_mutations(peer,id,outgoing,kind,changed,text) SELECT ?,old.id,old.outgoing,old.kind,old.changed,old.text FROM message_mutations old JOIN message_mutations current ON current.peer=? AND current.id=old.id AND current.outgoing=old.outgoing WHERE old.peer=? AND current.kind!='delete' AND (old.kind='delete' OR old.changed>current.changed)",arrayOf(pn,pn,lid))
             db.execSQL("INSERT OR IGNORE INTO chat_deletions(peer,cutoff,changed,remove_chat) SELECT ?,cutoff,changed,remove_chat FROM chat_deletions WHERE peer=?",arrayOf(pn,lid))

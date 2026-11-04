@@ -107,6 +107,7 @@ class MainActivity : Activity() {
     private lateinit var settingsBody: LinearLayout
     private lateinit var statusLabel: TextView
     private var conversation: String? = null
+    private var showingArchived=false
     private var messageList: LinearLayout? = null
     private var messageScroll: ScrollView? = null
     private var compose: EditText? = null
@@ -272,10 +273,10 @@ class MainActivity : Activity() {
     }
     private fun header(name: String, chat: Boolean) {
         val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(10),dp(9),dp(10),dp(6)); setBackgroundColor(surface) }
-        if (chat) bar.addView(action("‹", "Volver a conversaciones") { showList() }, LinearLayout.LayoutParams(dp(48),dp(48)))
+        if (chat || showingArchived) bar.addView(action("‹", "Volver a conversaciones") { showList(chat && showingArchived) }, LinearLayout.LayoutParams(dp(48),dp(48)))
         bar.addView(label(name, if(chat) 21f else 26f).apply { setTypeface(null,Typeface.BOLD); maxLines=1; gravity=Gravity.CENTER_VERTICAL; if(chat) { chatTitle=this; contentDescription="Editar nombre del contacto"; setOnClickListener { conversation?.let { editName(it) } } } }, LinearLayout.LayoutParams(0,dp(52),1f).apply { gravity=Gravity.CENTER_VERTICAL })
-        if (!chat) bar.addView(action("+", "Nueva conversación") { newConversation() },LinearLayout.LayoutParams(dp(52),dp(52)))
-        bar.addView(action("⋮", "Conexión y diagnóstico") { showSettings() },LinearLayout.LayoutParams(dp(48),dp(52)))
+        if (!chat && !showingArchived) bar.addView(action("+", "Nueva conversación") { newConversation() },LinearLayout.LayoutParams(dp(52),dp(52)))
+        bar.addView(action("⋮", "Menú principal") { showMainMenu() },LinearLayout.LayoutParams(dp(48),dp(52)))
         page.addView(bar)
         if(chat) {
             addressLabel=label("",12f,muted).apply { setPadding(dp(20),0,dp(16),dp(5));setBackgroundColor(surface) }
@@ -290,21 +291,22 @@ class MainActivity : Activity() {
         page=column().apply { setBackgroundColor(canvas) }
         setContentView(page)
     }
-    private fun showList() {
+    private fun showList(archived: Boolean = showingArchived) {
+        showingArchived=archived
         queuedHistoryPeer=null
         conversation=null; renderedMessages=emptyList(); messageList=null; messageScroll=null; compose=null; sendButton=null
-        newPage(); header("Conversaciones",false)
-        val rows=column()
-        val chats=store.chats()
+        newPage(); header(if(archived)"Archivados" else "Conversaciones",false)
+        val rows=column().apply { setPadding(dp(12),dp(10),dp(12),dp(10)) }
+        val chats=store.chats(archived)
         if(chats.isEmpty()) rows.addView(column().apply {
             setPadding(dp(28),dp(68),dp(28),dp(28))
-            addView(label("Tu primera conversación",23f).apply { setTypeface(null,Typeface.BOLD) })
-            addView(label("Pulsa + para añadir un número y escribirle.",16f,muted).apply { setPadding(0,dp(12),0,0) })
+            addView(label(if(archived)"No hay conversaciones archivadas" else "Tu primera conversación",23f).apply { setTypeface(null,Typeface.BOLD) })
+            if(!archived)addView(label("Pulsa + para añadir un número y escribirle.",16f,muted).apply { setPadding(0,dp(12),0,0) })
         })
         for(chat in chats) {
             traceIdentity(chat)
             val name=contactName(chat)
-            val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); setBackgroundColor(surface); minimumHeight=dp(86); isClickable=true; contentDescription="Abrir conversación con $name" }
+            val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); background=shape(surface,18); minimumHeight=dp(80); isClickable=true; contentDescription="Abrir conversación con $name" }
             row.addView(label(name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),28) },LinearLayout.LayoutParams(dp(52),dp(52)))
             row.addView(column().apply {
                 setPadding(dp(14),0,dp(8),0)
@@ -312,37 +314,41 @@ class MainActivity : Activity() {
                 addView(label(chat.preview,14f,muted).apply { setSingleLine(true); ellipsize=android.text.TextUtils.TruncateAt.END; setPadding(0,dp(5),0,0) })
             },LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1f))
             row.addView(label(if(chat.time>0) SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(chat.time)) else "",12f,muted))
-            row.setOnClickListener { showChat(chat.jid) }; row.setOnLongClickListener { chatActions(chat.jid); true }; rows.addView(row)
-            rows.addView(View(this).apply { setBackgroundColor(palette(R.color.wa_divider)) },LinearLayout.LayoutParams(-1,dp(1)))
+            row.setOnClickListener { showChat(chat.jid) }; row.setOnLongClickListener { chatActions(chat.jid); true }; rows.addView(row,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(6) })
         }
         page.addView(ScrollView(this).apply { addView(rows) },LinearLayout.LayoutParams(-1,0,1f))
     }
+    private fun archiveChat(jid: String, archive: Boolean) {
+        try {
+            store.setArchived(jid,archive)
+            showList()
+        } catch(error: Exception) { storageFailure(error) }
+    }
     private fun chatActions(jid: String) {
+        val archived=store.chat(jid)?.archived==true
         AlertDialog.Builder(this).setTitle(title(jid))
-            .setItems(arrayOf("Editar nombre", "Eliminar conversación")) { _, which ->
-                if(which==0)editName(jid) else confirmChatDeletion(jid)
+            .setItems(arrayOf(if(archived)"Desarchivar" else "Archivar", "Editar nombre", "Eliminar conversación")) { _, which ->
+                when(which) {
+                    0 -> archiveChat(jid,!archived)
+                    1 -> editName(jid)
+                    2 -> deleteChat(jid)
+                }
             }.show()
     }
-    private fun confirmChatDeletion(jid: String) {
-        AlertDialog.Builder(this).setTitle("Eliminar conversación")
-            .setMessage("Se borrará de Legacy la conversación con ${title(jid)} y se solicitará el borrado en tus otros dispositivos.")
-            .setNegativeButton("Cancelar",null)
-            .setPositiveButton("Eliminar") { _, _ ->
-                try {
-                    val anchor=store.latestRemoteMessage(jid)
-                    store.deleteChatLocally(jid)
-                    if(historyRequestPeer?.let { store.resolve(it)==store.resolve(jid) }==true)
-                        finishHistoryPage(false)
-                    refreshConversation()
-                    if(anchor!=null) {
-                        queuedDeletes.addLast(ChatDelete(anchor.peer,anchor.id,anchor.outgoing,anchor.time,System.currentTimeMillis()))
-                        if(connected)sendQueuedDelete() else reportDelete("Borrado local. Envío a WhatsApp pendiente.")
-                    } else reportDelete("Borrado local. No hay mensajes confirmados para solicitar el borrado en WhatsApp.")
-                } catch(error: Exception) { storageFailure(error) }
-            }.show()
-    }
-    private fun reportDelete(message: String) {
-        Toast.makeText(this,message,Toast.LENGTH_SHORT).show()
+    private fun deleteChat(jid: String) {
+        try {
+            val anchor=store.latestRemoteMessage(jid)
+            store.deleteChatLocally(jid)
+            if(historyRequestPeer?.let { store.resolve(it)==store.resolve(jid) }==true)
+                finishHistoryPage(false)
+            showList()
+            if(anchor!=null) {
+                queuedDeletes.addLast(ChatDelete(anchor.peer,anchor.id,anchor.outgoing,anchor.time,System.currentTimeMillis()))
+                sendQueuedDelete()
+            } else debugLog.add("DELETE_SYNC_NO_REMOTE_ANCHOR")
+        } catch(error: Exception) {
+            debugLog.failure("CHAT_DELETE_FAILED",error)
+        }
     }
     private fun sendQueuedDelete() {
         val active=connection ?: return
@@ -352,7 +358,6 @@ class MainActivity : Activity() {
             deleteInFlight=active.deleteChat(request)
             if(deleteInFlight)return
             debugLog.add("DELETE_SYNC_NOT_STARTED")
-            reportDelete("Borrado local. No se pudo enviar a WhatsApp.")
         }
     }
     private fun newConversation() {
@@ -515,11 +520,7 @@ class MainActivity : Activity() {
                 "delete-result" -> {
                     deleteInFlight=false
                     debugLog.add("DELETE_SYNC_RESULT state=$state")
-                    reportDelete(when(state) {
-                        1 -> "WhatsApp aceptó el borrado."
-                        -2 -> "Borrado local. WhatsApp no confirmó el borrado."
-                        else -> "Borrado local. No se pudo sincronizar con WhatsApp."
-                    })
+
                 }
                 "alias-conflict", "alias-storage" -> debugLog.add("CONTACT_MAPPING kind=${e[0]}")
                 "contact" -> if(e[2].isNotBlank()) store.learnName(e[2],e[3])
@@ -676,6 +677,39 @@ class MainActivity : Activity() {
         deleteInFlight=false
         render("Sin conexión · No se pudieron guardar los mensajes. Revisa el espacio disponible. Los recibidos pendientes se conservan.","",false)
     }
+    private fun showMainMenu() {
+        val rows=column().apply { setPadding(dp(14),dp(8),dp(14),dp(14));setBackgroundColor(canvas) }
+        val dialog=AlertDialog.Builder(this).setTitle("Menú").setView(rows).create()
+        fun item(title: String, detail: String, run: () -> Unit) {
+            rows.addView(column().apply {
+                background=shape(surface,16)
+                setPadding(dp(16),dp(11),dp(16),dp(11))
+                addView(label(title,17f).apply { setTypeface(null,Typeface.BOLD) })
+                addView(label(detail,13f,muted))
+                isFocusable=true
+                setOnClickListener { dialog.dismiss();run() }
+            },LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(6) })
+        }
+        conversation?.let { jid -> item("Opciones de conversación","Archivar, editar o eliminar") { chatActions(jid) } }
+        if(showingArchived) item("Conversaciones","Volver a la lista principal") { showList(false) }
+        else {
+            val count=store.chats(true).size
+            item("Archivados",if(count==1)"1 conversación archivada" else "$count conversaciones archivadas") { showList(true) }
+        }
+        item("Vinculación","Dispositivo vinculado y estado de conexión") { showSettings() }
+        item("Diagnóstico","Controles de conexión y registro") { showDiagnostics() }
+        dialog.show()
+    }
+    private fun showDiagnostics() {
+        val tools=column()
+        val save=Button(this).apply { text="Guardar log";setOnClickListener { exportLog() } }
+        listOf(check,stop,save).forEach {
+            (it.parent as? ViewGroup)?.removeView(it)
+            tools.addView(it)
+        }
+        AlertDialog.Builder(this).setTitle("Diagnóstico").setView(tools)
+            .setPositiveButton("Cerrar",null).show()
+    }
     private fun showSettings() {
         (settingsBody.parent as? ViewGroup)?.removeView(settingsBody)
         AlertDialog.Builder(this).setTitle("Conexión · $appVersion").setView(ScrollView(this).apply { addView(settingsBody) }).setPositiveButton("Cerrar",null).show()
@@ -700,19 +734,6 @@ class MainActivity : Activity() {
         stop=Button(this).apply { text="Desconectar";isEnabled=false }
         code=label("",32f).apply { setTextIsSelectable(true) };output=label("",14f)
         listOf(number,pair,code,output).forEach { settingsBody.addView(it) }
-        val save=Button(this).apply { text="Guardar log";setOnClickListener { exportLog() } }
-        settingsBody.addView(Button(this).apply {
-            text="Diagnóstico"
-            setOnClickListener {
-                val tools=column()
-                listOf(check,stop,save).forEach {
-                    (it.parent as? ViewGroup)?.removeView(it)
-                    tools.addView(it)
-                }
-                AlertDialog.Builder(this@MainActivity).setTitle("Diagnóstico").setView(tools)
-                    .setPositiveButton("Cerrar",null).show()
-            }
-        })
         pair.setOnClickListener {
             val phone=number.text.toString().trim()
             val previous=activeIdentity()
@@ -734,7 +755,7 @@ class MainActivity : Activity() {
             connected=false;pendingMessage=null
             if(deleteInFlight) {
                 deleteInFlight=false
-                reportDelete("Borrado local. WhatsApp no confirmó el borrado.")
+                debugLog.add("DELETE_SYNC_INTERRUPTED")
             }
             try {
                 queuedHistoryPeer=null
@@ -754,7 +775,7 @@ class MainActivity : Activity() {
 
     }
     @Deprecated("Legacy navigation supports Android 5")
-    override fun onBackPressed() { if(conversation!=null)showList() else super.onBackPressed() }
+    override fun onBackPressed() { if(conversation!=null)showList() else if(showingArchived)showList(false) else super.onBackPressed() }
 
     private fun render(status: String, pairingCode: String, busy: Boolean) {
         if (destroyed) return
@@ -779,7 +800,7 @@ class MainActivity : Activity() {
         connection?.cancel()
         if(deleteInFlight) {
             deleteInFlight=false
-            reportDelete("Borrado local. WhatsApp no confirmó el borrado.")
+            debugLog.add("DELETE_SYNC_INTERRUPTED")
         }
         finishHistoryPage(false)
         connected=false
@@ -1009,7 +1030,6 @@ class MainActivity : Activity() {
                         if(deleteInFlight) {
                             deleteInFlight=false
                             debugLog.add("DELETE_SYNC_DISCONNECTED")
-                            reportDelete("Borrado local. Se perdió la conexión antes de la confirmación.")
                         }
                         try {
                             pendingMessage=null
