@@ -132,6 +132,14 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     assert db.execute('SELECT kind,text FROM message_mutations WHERE peer=? AND id=? AND outgoing=0',(phone,'gone')).fetchone()==('delete','')
     assert db.execute('SELECT kind,text FROM message_mutations WHERE peer=? AND id=? AND outgoing=1',(phone,'edited')).fetchone()==('edit','newer')
     assert db.execute('SELECT 1 FROM message_mutations WHERE peer=? AND id=? AND outgoing=1',(phone,'gone')).fetchone() is None
+    visible = re.search(r'"(SELECT c.jid,c.name,[^"]+)"', source).group(1)
+    db.execute('DELETE FROM messages')
+    assert db.execute(visible, ('', '')).fetchall() == []
+    assert db.execute(visible, (pn, pn)).fetchone()[0] == pn
+    db.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?)', ('new', pn, 'Visible', 0, 0, 101, ''))
+    assert [row[0] for row in db.execute(visible, ('', ''))] == [pn]
+    db.execute('DELETE FROM messages WHERE peer=?', (pn,))
+    assert db.execute(visible, ('', '')).fetchall() == []
     db.commit()
     db.close()
 print('PASS: v1/v2/v3 upgrades to v4, rollback, reopen, Unicode, peer/direction dedup, receipt attribution, alias merges and persistent deletion markers. No compilation performed.')

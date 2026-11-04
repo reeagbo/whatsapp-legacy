@@ -51,15 +51,17 @@ static void be(uint32_t v,uint8_t *b,size_t n){for(size_t i=0;i<n;i++)b[n-i-1]=(
 static int number(const wa_node *n,size_t len,uint32_t *out){if(!n||!n->data||n->data_len!=len||len>4)return 0;uint32_t v=0;for(size_t i=0;i<len;i++)v=(v<<8)|n->data[i];*out=v;return 1;}
 static wa_node *keynode(wa_tree *t,wa_node *parent,const char *tag,uint32_t id,const uint8_t pk[32],const uint8_t *sig){uint8_t b[3];be(id,b,3);wa_node *n=wa_node_add(t,parent,tag);if(!n||!data(t,n,"id",b,3)||!data(t,n,"value",pk,32)||(sig&&!data(t,n,"signature",sig,64)))return NULL;return n;}
 static void mapkey(const char *jid,char key[80]){uint8_t h[32];SHA256((uint8_t*)jid,strlen(jid),h);memcpy(key,"mapping-",8);for(size_t i=0;i<32;i++)snprintf(key+8+i*2,3,"%02x",h[i]);}
-static int mapping(wa_messenger *m,const char *lid,const char *pn){char l[128],p[128],key[80];if(!base(lid,l)||!base(pn,p)||!strstr(l,"@lid")||!strstr(p,"@s.whatsapp.net"))return 0;mapkey(l,key);
+/* 1 saved, 0 storage failure, -1 conflicting or invalid address. */
+static int mapping(wa_messenger *m,const char *lid,const char *pn){char l[128],p[128],key[80];if(!base(lid,l)||!base(pn,p)||!strstr(l,"@lid")||!strstr(p,"@s.whatsapp.net"))return -1;mapkey(l,key);
  char previous[128];size_t length=0;int found=m->io.get(m->io.user,key,(uint8_t*)previous,127,&length);
  if(found<0||length>127)return 0;
- if(found==1){previous[length]=0;if(strcmp(previous,p))return 0;}
+ if(found==1){previous[length]=0;if(strcmp(previous,p))return -1;}
  if(!m->io.put(m->io.user,key,(uint8_t*)p,strlen(p)))return 0;mapkey(p,key);return m->io.put(m->io.user,key,(uint8_t*)l,strlen(l));}
 static int mapped(wa_messenger *m,const char *jid,char out[128]){char b[128],key[80];if(!base(jid,b))return 0;mapkey(b,key);size_t n=0;int r=m->io.get(m->io.user,key,(uint8_t*)out,127,&n);if(r!=1||n>127)return 0;out[n]=0;char valid[128];return base(out,valid);}
 /* Application address only: never rename the Signal session/ratchet key. */
 int wa_messenger_resolve(wa_messenger *m,const char *jid,char out[128]) {
  char b[128],pn[128];if(!m||!out||!base(jid,b))return 0;
+ if(m->lid[0]&&!strcmp(b,m->lid))return copy(out,128,m->own);
  if(strstr(b,"@lid")&&mapped(m,b,pn)&&strstr(pn,"@s.whatsapp.net"))return copy(out,128,pn);
  return copy(out,128,b);
 }
@@ -87,7 +89,11 @@ wa_messenger *wa_messenger_create(const wa_identity *id,const wa_storage *io,con
  if(!id||!io||!sender||!id->jid[0])return NULL;wa_messenger *m=calloc(1,sizeof *m);if(!m)return NULL;m->me=*id;m->io=*io;m->send=sender;m->user=u;
  if(!base(id->jid,m->own)||(lid&&*lid&&!base(lid,m->lid))||!(m->inbox=wa_inbox_open(io))||!(m->signal=wa_signal_create(id,io))){wa_messenger_free(m);return NULL;}
  if(!m->lid[0]){char known[128];if(mapped(m,m->own,known)&&strstr(known,"@lid"))copy(m->lid,sizeof m->lid,known);}
- if(m->lid[0]&&!mapping(m,m->lid,m->own)){wa_messenger_free(m);return NULL;}return m;
+ if(m->lid[0]){
+  int result=mapping(m,m->lid,m->own);
+  if(result!=1)event(m,result<0?"alias-conflict":"alias-storage","","","",0);
+ }
+ return m;
 }
 void wa_messenger_free(wa_messenger *m){if(!m)return;wa_signal_free(m->signal);wa_inbox_free(m->inbox);OPENSSL_cleanse(m,sizeof *m);free(m);}
 int wa_messenger_start(wa_messenger *m){if(!m)return 0;
@@ -120,7 +126,7 @@ static int prepare_devices(wa_messenger *m,const wa_node *root){
   const char *jid=wa_node_get(u,"jid");char pn[128];if(strcmp(u->tag,"user")||!base(jid,pn))continue;
   int isown=!strcmp(pn,m->own)||(*m->lid&&!strcmp(pn,m->lid));if(!isown&&strcmp(pn,m->peer))continue;
   const char *lid=wa_node_get(wa_node_child(u,"lid"),"val");char canonical[128];copy(canonical,sizeof canonical,pn);
-  if(lid&&base(lid,canonical)){if(!mapping(m,canonical,pn))return error(m,"No se pudo guardar la dirección del contacto.");}
+  if(lid&&base(lid,canonical)){if(mapping(m,canonical,pn)!=1)return error(m,"No se pudo guardar la dirección del contacto.");}
   if(!isown)copy(m->route,sizeof m->route,canonical);
   wa_node *devices=wa_node_child(wa_node_child(u,"devices"),"device-list");
   for(wa_node *d=devices?devices->child:NULL;d;d=d->next){
@@ -285,22 +291,31 @@ static int save_before_ratchet(void *user,const uint8_t *plain,size_t n) {
 static int incoming(wa_messenger *m,const wa_node *node){
  /* Do not acknowledge/drop a decrypted text if the app event queue is full.
   * The transport adapter closes and the server may redeliver on reconnect. */
- if(m->event_count>EVENTS-4)return -1;
+ if(m->event_count>EVENTS-8)return -1;
  const char *from=wa_node_get(node,"from"),*id=wa_node_get(node,"id");char frombase[128];
  if(!id||!base(from,frombase))return ack(m,node,"message");
  const char *sender=wa_node_get(node,"participant");if(!sender)sender=from;
  const char *alt=wa_node_get(node,strstr(frombase,"@lid")?"sender_pn":"sender_lid");
- if(!alt)alt=wa_node_get(node,strstr(frombase,"@lid")?"peer_recipient_pn":"peer_recipient_lid");
  int own_sender=!strcmp(frombase,m->own)||(m->lid[0]&&!strcmp(frombase,m->lid));
  const char *recipient=wa_node_get(node,"recipient");
  const char *recipient_alt=recipient?wa_node_get(node,strstr(recipient,"@lid")?"recipient_pn":"recipient_lid"):NULL;
- if(!envelope_mapping(m,frombase,alt)||(own_sender&&!envelope_mapping(m,recipient,recipient_alt))) {
-  event(m,"notice",id,frombase,"No se pudo guardar o verificar la dirección del contacto.",WA_INBOX_STORAGE_ERROR);return -1;
- }
+ if(recipient&&!recipient_alt)recipient_alt=wa_node_get(node,strstr(recipient,"@lid")?"peer_recipient_pn":"peer_recipient_lid");
+ int sender_mapping=envelope_mapping(m,frombase,alt);
+ int recipient_mapping=own_sender?envelope_mapping(m,recipient,recipient_alt):1;
+ if(sender_mapping<0||recipient_mapping<0)
+  event(m,"alias-conflict","","","",0);
+ if(!sender_mapping||!recipient_mapping)
+  event(m,"alias-storage","","","",0);
+ /* Alias metadata is optional. A conflict never overwrites an existing mapping,
+  * and receipt still depends on successful Signal and inbox storage. */
  char crypto[128],sender_base[128];if(!copy(crypto,sizeof crypto,sender)||!base(sender,sender_base))return ack(m,node,"message");
  int authenticated_self=own_sender&&(!strcmp(sender_base,m->own)||(m->lid[0]&&!strcmp(sender_base,m->lid)));
  if(own_sender&&!authenticated_self)return ack(m,node,"message");
- if(strstr(sender,"@s.whatsapp.net")){char lid[128];if(mapped(m,sender,lid)&&strstr(lid,"@lid"))device(lid,crypto,device_id(sender));}
+ if(strstr(sender,"@s.whatsapp.net")){
+  char lid[128];
+  if(authenticated_self&&m->lid[0])device(m->lid,crypto,device_id(sender));
+  else if(mapped(m,sender,lid)&&strstr(lid,"@lid"))device(lid,crypto,device_id(sender));
+ }
  int got=0,history=0;for(wa_node *e=node->child;e;e=e->next){const char *type=wa_node_get(e,"type");if(strcmp(e->tag,"enc")||!type||!e->data||(strcmp(type,"pkmsg")&&strcmp(type,"msg")))continue;
   /* Serialized Signal ciphertext includes framing/MAC and optional prekey
    * metadata; its plaintext fits in at most that many bytes. Allocate only for

@@ -1,6 +1,8 @@
 """Exercise the APK UI on a clean emulator; never send or link an account."""
 from pathlib import Path
 import re
+import sqlite3
+import tempfile
 import subprocess
 import time
 import xml.etree.ElementTree as ET
@@ -59,12 +61,24 @@ wait_for(text('Prueba UI'))
 wait_for(lambda a: a.get('content-desc') == 'Enviar mensaje' and a.get('enabled') == 'false')
 screenshot('chat.png')
 tap(wait_for(lambda a: a.get('content-desc') == 'Volver a conversaciones'))
-wait_for(text('Prueba UI'))
-screenshot('conversations.png')
-# SQLite conversation list survives process death.
+wait_for(text('Tu primera conversación'))
+assert not any(node.attrib.get('content-desc') == 'Abrir conversación con Prueba UI' for node in tree().iter('node'))
+# Add a synthetic received message to exercise the populated list without an account.
 adb('shell', 'am', 'force-stop', package)
+with tempfile.TemporaryDirectory() as folder:
+    database = Path(folder) / 'conversations.db'
+    database.write_bytes(adb('exec-out', 'run-as', package, 'cat', 'databases/conversations.db'))
+    db = sqlite3.connect(database)
+    with db:
+        db.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?)',
+                   ('ui-fixture', '34123456789@s.whatsapp.net', 'Mensaje de prueba', 0, 0, 1, ''))
+    db.close()
+    subprocess.run(['adb', 'shell', f"run-as {package} sh -c 'cat > databases/conversations.db'"],
+                   input=database.read_bytes(), check=True)
 adb('shell', 'am', 'start', '-n', package+'/.MainActivity')
-tap(wait_for(lambda a: a.get('content-desc') == 'Abrir conversación con Prueba UI'))
+row=wait_for(lambda a: a.get('content-desc') == 'Abrir conversación con Prueba UI')
+screenshot('conversations.png')
+tap(row)
 wait_for(lambda a: a.get('content-desc') == 'Enviar mensaje' and a.get('enabled') == 'false')
 print('PASS: new-conversation +, phone validation, chat composer, back navigation, persistent list and offline send guard')
 

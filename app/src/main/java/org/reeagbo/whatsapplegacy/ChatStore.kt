@@ -58,8 +58,10 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
     fun containsChat(jid: String): Boolean = readableDatabase.rawQuery(
         "SELECT 1 FROM chats WHERE jid=?",arrayOf(resolve(jid))
     ).use { it.moveToFirst() }
-    fun chats(): List<Chat> = readableDatabase.rawQuery(
-        "SELECT c.jid,c.name,COALESCE((SELECT text FROM messages m WHERE m.peer=c.jid ORDER BY time DESC,rowid DESC LIMIT 1),''),c.updated,COALESCE((SELECT name FROM contact_names n WHERE n.jid=c.jid),'') FROM chats c ORDER BY c.updated DESC", null
+    fun chats(): List<Chat> = queryChats(null)
+    fun chat(jid: String): Chat? = queryChats(resolve(jid)).firstOrNull()
+    private fun queryChats(jid: String?): List<Chat> = readableDatabase.rawQuery(
+        "SELECT c.jid,c.name,COALESCE((SELECT text FROM messages m WHERE m.peer=c.jid ORDER BY time DESC,rowid DESC LIMIT 1),''),c.updated,COALESCE((SELECT name FROM contact_names n WHERE n.jid=c.jid),'') FROM chats c WHERE (?='' AND EXISTS(SELECT 1 FROM messages m WHERE m.peer=c.jid)) OR c.jid=? ORDER BY c.updated DESC", arrayOf(jid.orEmpty(),jid.orEmpty())
     ).use { c -> buildList { while (c.moveToNext()) add(Chat(c.getString(0), c.getString(1), c.getString(2), c.getLong(3), c.getString(4))) } }
     fun messages(jid: String, limit: Int = 100): List<Message> = readableDatabase.rawQuery(
         "SELECT id,peer,text,outgoing,status,time,note FROM messages WHERE peer=? ORDER BY time DESC,id DESC,outgoing DESC LIMIT ?", arrayOf(resolve(jid),limit.coerceIn(1,5000).toString())
@@ -111,8 +113,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         db.beginTransaction()
         try { block();db.setTransactionSuccessful() } finally { db.endTransaction() }
     }
-    fun historyChat(jid: String, name: String, time: Long) {
-        if(!hiddenByChatDeletion(resolve(jid),time))addChat(jid,updated=time)
+    fun historyChat(jid: String, name: String) {
         if(name.isNotBlank())learnName(jid,name)
     }
     fun historyAnchor(jid: String): Message? = readableDatabase.rawQuery(
@@ -149,13 +150,13 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
-    fun beginHistoryPage(jid: String, anchor: Message, manual: Boolean): Boolean {
+    fun beginHistoryPage(jid: String, anchor: Message): Boolean {
         val peer=resolve(jid);val now=System.currentTimeMillis();val db=writableDatabase
         var blocked=false
         db.rawQuery("SELECT anchor_id,anchor_time,anchor_outgoing,state,retry_at FROM history_pages WHERE peer=?",arrayOf(peer)).use { c ->
             if(c.moveToFirst()) {
                 val same=c.getString(0)==anchor.id && c.getLong(1)==anchor.time && (c.getInt(2)!=0)==anchor.outgoing
-                blocked=c.getString(3)=="pending" && c.getLong(4)>now || !manual && same && c.getString(3)=="stalled"
+                blocked=c.getString(3)=="pending" && c.getLong(4)>now || same && c.getString(3)=="stalled"
             }
         }
         if(blocked)return false
