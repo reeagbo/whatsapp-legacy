@@ -20,6 +20,7 @@ int wa_messenger_sync_key(wa_messenger *,const char *,const char *);
 struct wa_history;
 int wa_messenger_delete_chat(wa_messenger *,const char *,const char *,int,uint64_t,uint64_t,int);
 void wa_messenger_delete_snapshot(wa_messenger *,const struct wa_history *);
+void wa_messenger_recover_state(wa_messenger *,int low);
 void wa_messenger_tick(wa_messenger *,uint64_t now_ms);
 const wa_message_event *wa_messenger_event(const wa_messenger *);
 void wa_messenger_event_done(wa_messenger *);

@@ -15,7 +15,7 @@ struct wa_messenger {
  wa_identity me;wa_storage io;wa_signal *signal;wa_inbox *inbox;int inbox_replayed;wa_send_node send;void *user;
  char own[128],lid[128];
  int history_mode;
- uint64_t sync_due[2],last_key_request,sync_requested_version,sync_deadline;int sync_more,sync_low;unsigned sync_sequence;char sync_query[48];
+ uint64_t sync_due[2],last_key_request,sync_requested_version,sync_deadline;int sync_more,sync_low,sync_force[2];unsigned sync_sequence;char sync_query[48];
  int ready,boot,pending,phase;uint64_t now,deadline;
  char delete_peer[128],delete_anchor[96],delete_id[48],delete_snapshot[48];
  uint64_t delete_time,delete_changed,delete_deadline;int delete_own,chat_change;
@@ -318,7 +318,7 @@ static int incoming(wa_messenger *m,const wa_node *node){
   if(authenticated_self&&m->lid[0])device(m->lid,crypto,device_id(sender));
   else if(mapped(m,sender,lid)&&strstr(lid,"@lid"))device(lid,crypto,device_id(sender));
  }
- int got=0,history=0;for(wa_node *e=node->child;e;e=e->next){const char *type=wa_node_get(e,"type");if(strcmp(e->tag,"enc")||!type||!e->data||(strcmp(type,"pkmsg")&&strcmp(type,"msg")))continue;
+ int got=0,history=0,peer_receipt=0;for(wa_node *e=node->child;e;e=e->next){const char *type=wa_node_get(e,"type");if(strcmp(e->tag,"enc")||!type||!e->data||(strcmp(type,"pkmsg")&&strcmp(type,"msg")))continue;
   /* Serialized Signal ciphertext includes framing/MAC and optional prekey
    * metadata; its plaintext fits in at most that many bytes. Allocate only for
    * this bounded stanza, rather than capping valid sync payloads at 16 KiB. */
@@ -352,7 +352,7 @@ static int incoming(wa_messenger *m,const wa_node *node){
   int valid=1;for(unsigned j=0;j<pad;j++)if(plaintext[n-j-1]!=pad)valid=0;
   if(valid&&authenticated_self){int code=wa_history_response(plaintext,n-pad);if(code>=0)event(m,"history-status","","",code==0?"El móvil principal aceptó la solicitud de historial":code==4?"El móvil principal no admite esta solicitud de historial completo. Prueba recuperar mensajes desde un chat.":"El móvil principal rechazó la solicitud de historial",code==0?1:-1);}
   if(valid&&commit.history==1){history=1;event(m,"history","","","Historial recibido; pendiente de importar",0);}
-  else if(valid&&commit.history){if(commit.history==3)m->sync_due[0]=m->sync_due[1]=0;else got=1;event(m,"state-sync","","","",0);}
+  else if(valid&&commit.history){if(commit.history==3){m->sync_due[0]=m->sync_due[1]=0;peer_receipt=1;event(m,"state-key","","","",1);}else got=1;event(m,"state-sync","","","",0);}
   else if(valid&&commit.stored){
    wa_message_event *saved=&commit.saved;
    inbox_event(m,saved);got=1;
@@ -369,7 +369,7 @@ static int incoming(wa_messenger *m,const wa_node *node){
  }
  /* Unsupported payloads are acknowledged without claiming decryption/delivery. */
  int ok=ack(m,node,"message");
- if(got||history){wa_tree *t=wa_tree_create();if(!t)return 0;wa_node *r=wa_node_add(t,NULL,"receipt");ok=ok&&r&&wa_node_attr(r,"to",from)&&wa_node_attr(r,"id",id)&&(!history||wa_node_attr(r,"type","hist_sync"));if(ok)ok=send(m,t);else wa_tree_free(t);}
+ if(got||history||peer_receipt){wa_tree *t=wa_tree_create();if(!t)return 0;wa_node *r=wa_node_add(t,NULL,"receipt");ok=ok&&r&&wa_node_attr(r,"to",from)&&wa_node_attr(r,"id",id)&&(history?wa_node_attr(r,"type","hist_sync"):!peer_receipt||wa_node_attr(r,"type","peer_msg"));if(ok)ok=send(m,t);else wa_tree_free(t);}
  return ok;
 }
 static void delete_result(wa_messenger *m,int state){
@@ -429,6 +429,7 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
    if(type&&!strcmp(type,"result")){
     int collected=wa_state_collect(&m->io,node,NULL,m->sync_low);
     m->sync_more=collected>1;
+    if(!collected)m->sync_force[m->sync_low]=1;
     event(m,"state-sync","","",m->sync_low?"regular_low":"regular_high",collected?0:-1);
    }else event(m,"state-sync","","",m->sync_low?"regular_low":"regular_high",-2);
    return 1;
@@ -455,6 +456,9 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
  return 1;
  boot_error:m->boot=0;event(m,"notice","","","No se pudieron preparar las claves de mensajería. Vuelve a conectar.",-1);return 0;
 }
+void wa_messenger_recover_state(wa_messenger *m,int low){
+ if(m)m->sync_force[low!=0]=1;
+}
 void wa_messenger_tick(wa_messenger *m,uint64_t now){if(!m)return;int first=m->now==0;m->now=now;
  /* The first tick establishes the external monotonic clock origin. */
  if(first&&m->deadline)m->deadline+=now;
@@ -473,7 +477,9 @@ void wa_messenger_tick(wa_messenger *m,uint64_t now){if(!m)return;int first=m->n
    m->sync_low=low;m->sync_more=0;m->sync_due[low]=now+120000;m->sync_deadline=now+30000;
    m->sync_requested_version=wa_state_version(&m->io,low);
    snprintf(m->sync_query,sizeof m->sync_query,"legacy-state-%u",++m->sync_sequence);
-   if(!send(m,wa_state_query(&m->io,m->sync_query,0,low)))m->sync_query[0]=0;
+   int force=m->sync_force[low];
+   m->sync_force[low]=0;
+   if(!send(m,wa_state_query(&m->io,m->sync_query,force,low)))m->sync_query[0]=0;
   }
  }
  if(m->deadline&&now>=m->deadline){m->deadline=0;if(m->pending){event(m,"status",m->id,m->peer,m->phase==3?"Sin confirmación; el envío podría haberse aceptado":"La consulta agotó el tiempo",m->phase==3?-2:-1);m->pending=0;m->phase=0;}if(m->boot){m->boot=0;event(m,"notice","","","Tiempo agotado al preparar la mensajería.",-1);}}

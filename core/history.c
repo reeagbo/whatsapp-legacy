@@ -32,9 +32,9 @@ static void key(unsigned slot,char out[32]){snprintf(out,32,"history-task-%u",sl
 int wa_history_task(const wa_storage *io,unsigned slot,uint8_t *out,size_t cap,size_t *n){if(!io||slot>=WA_HISTORY_TASKS)return -1;char k[32];key(slot,k);return io->get(io->user,k,out,cap,n);}
 int wa_history_save(const wa_storage *io,const uint8_t *p,size_t n){
  if(!io||!p||!n||n>WA_HISTORY_NOTIFICATION_MAX||!valid((wa_slice){p,n}))return 0;
- uint8_t *b=malloc(WA_HISTORY_NOTIFICATION_MAX);if(!b)return 0;unsigned free_slot=WA_HISTORY_TASKS;int ok=0;
- for(unsigned i=0;i<WA_HISTORY_TASKS;i++){size_t z=0;int r=wa_history_task(io,i,b,WA_HISTORY_NOTIFICATION_MAX,&z);if(r<0)goto end;if(r==0){if(free_slot==WA_HISTORY_TASKS)free_slot=i;}else if(z==n&&!CRYPTO_memcmp(p,b,n)){ok=1;goto end;}}
- if(free_slot<WA_HISTORY_TASKS){char k[32];key(free_slot,k);ok=io->put(io->user,k,p,n);}
+ uint8_t *b=malloc(WA_HISTORY_NOTIFICATION_MAX);if(!b)return 0;unsigned free_slot=WA_HISTORY_PATCH_TASKS;int ok=0;
+ for(unsigned i=0;i<WA_HISTORY_PATCH_TASKS;i++){size_t z=0;int r=wa_history_task(io,i,b,WA_HISTORY_NOTIFICATION_MAX,&z);if(r<0)goto end;if(r==0){if(free_slot==WA_HISTORY_PATCH_TASKS)free_slot=i;}else if(z==n&&!CRYPTO_memcmp(p,b,n)){ok=1;goto end;}}
+ if(free_slot<WA_HISTORY_PATCH_TASKS){char k[32];key(free_slot,k);ok=io->put(io->user,k,p,n);}
  end:OPENSSL_cleanse(b,WA_HISTORY_NOTIFICATION_MAX);free(b);return ok;
 }
 int wa_history_done(const wa_storage *io,unsigned slot,const uint8_t *p,size_t n){uint8_t *b=malloc(WA_HISTORY_NOTIFICATION_MAX);if(!b)return 0;size_t z=0;int r=wa_history_task(io,slot,b,WA_HISTORY_NOTIFICATION_MAX,&z);int ok=r==0;if(r==1&&z==n&&!CRYPTO_memcmp(p,b,n)){char k[32];key(slot,k);ok=io->put(io->user,k,NULL,0);}OPENSSL_cleanse(b,WA_HISTORY_NOTIFICATION_MAX);free(b);return ok;}
@@ -143,7 +143,11 @@ static int state_task(const wa_storage *io,const wa_node *node,int snapshot,uint
   ok=ok&&put_bytes(103,raw.ptr,raw.len,task,cap,&n);
   if(bytes(raw,3,&external))ok=ok&&blob_ref(external,task,cap,&n);
  }
- if(ok)ok=wa_history_save(io,task,n);
+ if(ok&&snapshot){
+  /* Reserve one recovery slot per collection. Old patches cannot block it. */
+  char name[32];key(WA_HISTORY_PATCH_TASKS+(unsigned)low,name);
+  ok=io->put(io->user,name,task,n);
+ }else if(ok)ok=wa_history_save(io,task,n);
  OPENSSL_cleanse(task,cap);free(task);return ok;
 }
 int wa_state_collect(const wa_storage *io,const wa_node *result,const char *request,int low) {
@@ -161,7 +165,7 @@ int wa_state_collect(const wa_storage *io,const wa_node *result,const char *requ
   if(snapshot&&!state_task(io,snapshot,1,0,request,low))return 0;
   wa_node *patches=wa_node_child(collection,"patches");
   for(wa_node *p=patches?patches->child:collection->child;p;p=p->next)
-   if(!strcmp(p->tag,"patch")&&!state_task(io,p,0,++fallback,NULL,low))return 0;
+   if(!strcmp(p->tag,"patch")&&!state_task(io,p,0,++fallback,NULL,low))return snapshot?2:0;
  }
  return found?1+more:0;
 }
@@ -304,7 +308,8 @@ static int state_records(wa_history *h,const wa_storage *io,wa_slice data,unsign
  }
  return k==0;
 }
-static int state_open(wa_history *h,const wa_storage *io,wa_slice task,wa_slice external,char missing[129]) {
+static int state_open_checked(wa_history *h,const wa_storage *io,wa_slice task,wa_slice external,char missing[129],const char **stage) {
+ *stage="state-format";
  uint64_t kind=number(task,101);
  h->state_job=(int)kind;
  if(kind==3){
@@ -323,9 +328,10 @@ static int state_open(wa_history *h,const wa_storage *io,wa_slice task,wa_slice 
  if(!v||v>UINT32_MAX)return 0;
  int requested=snapshot&&str(task,109,h->delete_request,sizeof h->delete_request);
  if(v<=old&&!requested){h->state_version=old;return 1;}
- if(!snapshot&&v!=old+1)return 0;
+ if(!snapshot&&v!=old+1){*stage=h->low?"version-gap-low":"version-gap-high";return 0;}
  if(!bytes(raw,snapshot?4:6,&keyid)||!bytes(keyid,1,&keyid)
    ||!bytes(raw,snapshot?3:5,&expected)||expected.len!=32)return 0;
+ *stage="state-auth";
  uint8_t keys[160],hash[128]={0},stamp[8],actual[32];unsigned n=0;
  int ok=mutation_keys(io,keyid,keys,missing);
  HMAC_CTX *hm=HMAC_CTX_new();big64(stamp,v);
@@ -344,6 +350,7 @@ static int state_open(wa_history *h,const wa_storage *io,wa_slice task,wa_slice 
   &&HMAC_Final(hm,actual,&n)&&!CRYPTO_memcmp(actual,expected.ptr,32);
  HMAC_CTX_free(hm);OPENSSL_cleanse(keys,sizeof keys);
  if(ok&&requested){
+  *stage="state-memory";
   h->plain=malloc(raw.len);if(!h->plain)return 0;
   memcpy(h->plain,raw.ptr,raw.len);h->size=raw.len;
   memcpy(h->snapshot_hash,hash,sizeof hash);
@@ -451,18 +458,20 @@ static int inflate_data(const uint8_t *p,size_t n,uint8_t **out,size_t *size){
  z.next_out=b+z.total_out;z.avail_out=(uInt)(cap-z.total_out);r=inflate(&z,Z_NO_FLUSH);}
  int ok=r==Z_STREAM_END&&z.avail_in==0&&z.total_out>0;*size=(size_t)z.total_out;inflateEnd(&z);if(!ok){OPENSSL_cleanse(b,cap);free(b);return 0;}*out=b;return 1;
 }
-wa_history *wa_history_open_sync(const wa_storage *io,const uint8_t *notification,size_t n,const uint8_t *enc,size_t en,char missing[129]){
+wa_history *wa_history_open_diagnostic(const wa_storage *io,const uint8_t *notification,size_t n,const uint8_t *enc,size_t en,char missing[129],const char **stage){
+ *stage="task-format";
  if(!notification||!n||n>WA_HISTORY_NOTIFICATION_MAX||!valid((wa_slice){notification,n}))return NULL;
  wa_slice s={notification,n},v;uint8_t *compressed=NULL;size_t cn=0;int allocated=0;
  uint64_t kind=number(s,101);
  if(missing)missing[0]=0;
  if(kind==3||(kind==2&&!bytes(s,5,&v))){
   wa_history *h=calloc(1,sizeof *h);
-  if(!h||!state_open(h,io,s,(wa_slice){NULL,0},missing)){wa_history_free(h);return NULL;}
+  if(!h||!state_open_checked(h,io,s,(wa_slice){NULL,0},missing,stage)){wa_history_free(h);return NULL;}
   return h;
  }
  if(!kind&&bytes(s,11,&v)&&v.len){compressed=(uint8_t*)v.ptr;cn=v.len;}
  else {
+  *stage="media-format";
   wa_slice mk,eh={0},ph={0};uint8_t hash[32],expanded[112],mac[32];size_t expanded_n=sizeof expanded;unsigned mn=0;
   bytes(s,4,&eh);bytes(s,1,&ph);
   if(!enc||en<26||en>WA_HISTORY_DOWNLOAD_MAX||(en-10)%16||!bytes(s,3,&mk)||mk.len!=32||
@@ -470,17 +479,24 @@ wa_history *wa_history_open_sync(const wa_storage *io,const uint8_t *notificatio
      (eh.ptr&&(eh.len!=32||!SHA256(enc,en,hash)||CRYPTO_memcmp(hash,eh.ptr,32))))return NULL;
   EVP_PKEY_CTX *k=EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF,NULL);uint8_t salt[32]={0};const char *info=kind?"WhatsApp App State Keys":"WhatsApp History Keys";
   int ok=k&&EVP_PKEY_derive_init(k)>0&&EVP_PKEY_CTX_set_hkdf_md(k,EVP_sha256())>0&&EVP_PKEY_CTX_set1_hkdf_salt(k,salt,32)>0&&EVP_PKEY_CTX_set1_hkdf_key(k,mk.ptr,32)>0&&EVP_PKEY_CTX_add1_hkdf_info(k,(const uint8_t*)info,(int)strlen(info))>0&&EVP_PKEY_derive(k,expanded,&expanded_n)>0;EVP_PKEY_CTX_free(k);
+  *stage="media-mac";
   HMAC_CTX *hm=HMAC_CTX_new();ok=ok&&hm&&HMAC_Init_ex(hm,expanded+48,32,EVP_sha256(),NULL)&&HMAC_Update(hm,expanded,16)&&HMAC_Update(hm,enc,en-10)&&HMAC_Final(hm,mac,&mn)&&!CRYPTO_memcmp(mac,enc+en-10,10);HMAC_CTX_free(hm);
   if(!ok){OPENSSL_cleanse(expanded,sizeof expanded);return NULL;}
+  *stage="media-decode";
   compressed=malloc(en);if(!compressed){OPENSSL_cleanse(expanded,sizeof expanded);return NULL;}allocated=1;
   EVP_CIPHER_CTX *aes=EVP_CIPHER_CTX_new();int a=0,b=0;ok=aes&&EVP_DecryptInit_ex(aes,EVP_aes_256_cbc(),NULL,expanded+16,expanded)>0&&EVP_DecryptUpdate(aes,compressed,&a,enc,(int)(en-10))>0&&EVP_DecryptFinal_ex(aes,compressed+a,&b)>0;EVP_CIPHER_CTX_free(aes);OPENSSL_cleanse(expanded,sizeof expanded);cn=(size_t)(a+b);
   uint64_t length=number(s,2);ok=ok&&(!length||length==cn)&&(!ph.ptr||(SHA256(compressed,cn,hash)&&!CRYPTO_memcmp(hash,ph.ptr,32)));if(!ok){OPENSSL_cleanse(compressed,en);free(compressed);return NULL;}
  }
  wa_history *h=calloc(1,sizeof *h);
- int ok=h&&(kind?state_open(h,io,s,(wa_slice){compressed,cn},missing):inflate_data(compressed,cn,&h->plain,&h->size));
+ if(!kind)*stage="history-zlib";
+ int ok=h&&(kind?state_open_checked(h,io,s,(wa_slice){compressed,cn},missing,stage):inflate_data(compressed,cn,&h->plain,&h->size));
  if(allocated){OPENSSL_cleanse(compressed,en);free(compressed);}
  if(!ok||(!kind&&!valid((wa_slice){h->plain,h->size}))){wa_history_free(h);return NULL;}
  h->root=(reader){h->plain,h->size,0};return h;
+}
+wa_history *wa_history_open_sync(const wa_storage *io,const uint8_t *p,size_t n,const uint8_t *enc,size_t en,char missing[129]){
+ const char *stage;
+ return wa_history_open_diagnostic(io,p,n,enc,en,missing,&stage);
 }
 wa_history *wa_history_open(const uint8_t *p,size_t n,const uint8_t *enc,size_t en) {
  return wa_history_open_sync(NULL,p,n,enc,en,NULL);

@@ -50,6 +50,7 @@ import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
     private external fun nativeHistoryRequest(handle: Long, jid: String, anchor: String, own: Boolean, time: Long, id: String): Boolean
+    private external fun nativeHistorySlots(): Int
     private external fun nativeHistoryTask(handle: Long, slot: Int): ByteArray?
     private external fun nativeDeleteChat(handle: Long, peer: String, anchor: String, own: Boolean, time: Long, changed: Long, change: Int): Boolean
     private external fun nativeDeleteSnapshot(handle: Long, cursor: Long)
@@ -523,6 +524,7 @@ class MainActivity : Activity() {
                     debugLog.add("HISTORY_EVENT kind=${e[0]} state=$state")
                     if(state<0)finishHistoryPage(false)
                 }
+                "state-key" -> debugLog.add("APP_STATE_KEY_RECEIVED")
                 "state-sync" -> debugLog.add("APP_STATE_REPLY collection=${e[3]} state=$state")
                 "delete-result" -> {
                     chatChangeInFlight=false
@@ -842,14 +844,20 @@ class MainActivity : Activity() {
             ws?.let { flush(it) };publish();ok
         }
         fun historyTasks(): List<Pair<Int,ByteArray>> = synchronized(lock) {
-            if(finished || handle==0L) emptyList() else (0 until 8).mapNotNull { slot -> nativeHistoryTask(handle,slot)?.let { slot to it } }
+            if(finished || handle==0L) emptyList() else (0 until nativeHistorySlots()).mapNotNull { slot -> nativeHistoryTask(handle,slot)?.let { slot to it } }
         }
         fun openHistory(task: ByteArray, encrypted: ByteArray, missing: Array<String?>): Long = synchronized(lock) {
-            if(finished || handle==0L) 0L else nativeHistoryOpen(handle,task,encrypted,missing)
+            if(finished || handle==0L)return@synchronized 0L
+            val result=nativeHistoryOpen(handle,task,encrypted,missing)
+            drainNative()
+            result
         }
         fun requestSyncKey(key: String) = synchronized(lock) {
-            if(!finished && handle!=0L && nativeSyncKey(handle,key,UUID.randomUUID().toString().replace("-","").uppercase(Locale.ROOT)))
-                ws?.let { flush(it) }
+            if(!finished && handle!=0L) {
+                val sent=nativeSyncKey(handle,key,UUID.randomUUID().toString().replace("-","").uppercase(Locale.ROOT))
+                log("APP_STATE_KEY_REQUEST queued=$sent")
+                if(sent)ws?.let { flush(it) }
+            }
         }
         fun deleteChat(request: ChatChange): Boolean = synchronized(lock) {
             if(finished || handle==0L)return@synchronized false
@@ -966,6 +974,8 @@ class MainActivity : Activity() {
         private fun publish() {
             if (finished || handle == 0L) return
             nativeTick(handle,SystemClock.elapsedRealtime())
+            ws?.let { flush(it) }
+            if(finished || handle==0L)return
             events()
             val state = nativeState(handle)
             val status = nativeStatus(handle)

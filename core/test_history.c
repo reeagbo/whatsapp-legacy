@@ -51,7 +51,8 @@ int main(void) {
  assert(put_number(101,1,descriptor,sizeof descriptor,&dn));
  assert(put_bytes(109,(const uint8_t*)"request",7,descriptor,sizeof descriptor,&dn));
  big64(stored_version,1);assert(io.put(io.user,STATE_VERSION_KEY,stored_version,8));
- h=calloc(1,sizeof *h);assert(h&&state_open(h,&io,(wa_slice){descriptor,dn},(wa_slice){snapshot,sn},NULL));
+ const char *stage;
+ h=calloc(1,sizeof *h);assert(h&&state_open_checked(h,&io,(wa_slice){descriptor,dn},(wa_slice){snapshot,sn},NULL,&stage));
  wa_tree *tree=wa_history_delete_patch(h,&io,"outgoing-test","123456789@lid","last",0,1700000000000ULL,1700000002000ULL,0);
  assert(tree);wa_history_free(h);
  wa_node *collection=wa_node_child(wa_node_child(tree->root,"sync"),"collection");
@@ -65,6 +66,19 @@ int main(void) {
  assert(h&&wa_history_next(h,&e,&time)==1&&!strcmp(e.kind,"delete-chat")&&!strcmp(e.jid,"123456789@lid"));
  wa_history_free(h);wa_tree_free(tree);
  assert(wa_state_version(&io,0)==1&&io.put(io.user,STATE_VERSION_KEY,NULL,0)&&io.put(io.user,filename,NULL,0));
+ /* A full delta queue must still be able to store a recovery snapshot. */
+ for(unsigned slot=0;slot<WA_HISTORY_PATCH_TASKS;slot++){
+  char name[32];key(slot,name);
+  assert(io.put(io.user,name,inline_task,sizeof inline_task));
+ }
+ const uint8_t external_ref[]={10,1,7,18,5,'/','t','e','s','t'};
+ wa_node snapshot_node={0};snapshot_node.data=external_ref;snapshot_node.data_len=sizeof external_ref;
+ assert(state_task(&io,&snapshot_node,1,0,NULL,1));
+ assert(wa_history_task(&io,WA_HISTORY_PATCH_TASKS+1,stored,sizeof stored,&n)==1);
+ assert(wa_history_job_kind(stored,n)==1);
+ assert(wa_history_done(&io,WA_HISTORY_PATCH_TASKS+1,stored,n));
+ for(unsigned slot=0;slot<WA_HISTORY_PATCH_TASKS;slot++)
+  assert(wa_history_done(&io,slot,inline_task,sizeof inline_task));
  wa_storage_posix_close(&io);assert(!rmdir(folder));
  /* A remote chat removal carries the last included message in Unix seconds. */
  const uint8_t index[]="[\"deleteChat\",\"123456789@lid\",\"1\"]";

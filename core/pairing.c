@@ -113,7 +113,10 @@ static void trace_node(wa_pair_session *s, const char *direction, const wa_node 
   if (!n) return;
   const char *id = wa_node_get(n,"id");
   const char *kind = !id ? "none" : !strcmp(id,"legacy-pair-1") ? "pair-request" :
-    !strcmp(id,"legacy-finish-1") ? "pair-finish" : !strncmp(id,"legacy-ping-",12) ? "ping" : "other";
+    !strcmp(id,"legacy-finish-1") ? "pair-finish" : !strncmp(id,"legacy-ping-",12) ? "ping" :
+    !strncmp(id,"legacy-state-",13) ? "app-state-read" :
+    !strncmp(id,"legacy-snap-",12) ? "app-state-snapshot" :
+    !strncmp(id,"legacy-delete-",14) ? "app-state-write" : "other";
   trace(s,"%s CORRELATION id_kind=%s",direction,kind);
   const char *code = wa_node_get(n,"code"); if(!code)code=wa_node_get(n,"reason"); if(!code)code=wa_node_get(n,"error");
   trace(s,"%s NODE tag=%s type=%s code=%s attrs=%zu data_bytes=%zu",direction,
@@ -356,7 +359,15 @@ int wa_pair_resolve(wa_pair_session *s,const char *jid,char out[128]) {
 int wa_pair_history(wa_pair_session *s,const char *jid,const char *anchor,int own,uint64_t time,const char *id) {return s&&wa_messenger_history(s->messenger,jid,anchor,own,time,id);}
 int wa_pair_history_task(wa_pair_session *s,unsigned slot,uint8_t *out,size_t cap,size_t *n) {return s&&s->messenger?wa_history_task(&s->message_storage,slot,out,cap,n):-1;}
 wa_history *wa_pair_history_open(wa_pair_session *s,const uint8_t *p,size_t n,const uint8_t *enc,size_t en,char missing[129]){
- return s&&s->messenger?wa_history_open_sync(&s->message_storage,p,n,enc,en,missing):NULL;
+ if(!s||!s->messenger)return NULL;
+ const char *stage;
+ wa_history *h=wa_history_open_diagnostic(&s->message_storage,p,n,enc,en,missing,&stage);
+ if(!h&&wa_history_job_kind(p,n)){
+  trace(s,"APP_STATE_DECODE_FAILED stage=%s key_missing=%d",stage,missing&&missing[0]!=0);
+  if(!strcmp(stage,"version-gap-low"))wa_messenger_recover_state(s->messenger,1);
+  else if(!strcmp(stage,"version-gap-high"))wa_messenger_recover_state(s->messenger,0);
+ }
+ return h;
 }
 int wa_pair_history_done(wa_pair_session *s,unsigned slot,const uint8_t *p,size_t n,uint64_t version) {
  return s&&s->messenger&&wa_history_commit(&s->message_storage,slot,p,n,version);

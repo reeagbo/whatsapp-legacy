@@ -200,6 +200,9 @@ JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeDe
 JNIEXPORT void JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeDeleteSnapshot(JNIEnv *env,jobject self,jlong h,jlong cursor){
  (void)env;(void)self;if(h&&cursor)wa_pair_delete_snapshot(session(h),(wa_history*)(intptr_t)cursor);
 }
+JNIEXPORT jint JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistorySlots(JNIEnv *env,jobject self){
+ (void)env;(void)self;return WA_HISTORY_TASKS;
+}
 JNIEXPORT jbyteArray JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryTask(JNIEnv *env,jobject self,jlong h,jint slot) {
  (void)self;if(!h||slot<0||slot>=WA_HISTORY_TASKS)return NULL;uint8_t *buf=malloc(WA_HISTORY_NOTIFICATION_MAX);if(!buf)return NULL;
  size_t n=0;int r=wa_pair_history_task(session(h),(unsigned)slot,buf,WA_HISTORY_NOTIFICATION_MAX,&n);jbyteArray out=NULL;
