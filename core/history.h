@@ -10,9 +10,9 @@
 int wa_history_save(const wa_storage *,const uint8_t *,size_t);
 int wa_history_task(const wa_storage *,unsigned,uint8_t *,size_t,size_t *);
 int wa_state_save_keys(const wa_storage *,const uint8_t *,size_t);
-wa_tree *wa_state_query(const wa_storage *,const char *id,int force_snapshot);
-int wa_state_collect(const wa_storage *,const wa_node *,const char *snapshot_request);
-uint64_t wa_state_version(const wa_storage *);
+wa_tree *wa_state_query(const wa_storage *,const char *id,int force_snapshot,int low);
+int wa_state_collect(const wa_storage *,const wa_node *,const char *snapshot_request,int low);
+uint64_t wa_state_version(const wa_storage *,int low);
 int wa_history_save_mutation(const wa_storage *,const char *,const char *,const char *,int,uint64_t,const char *);
 int wa_history_done(const wa_storage *,unsigned,const uint8_t *,size_t);
 /* Only direct HTTPS paths under WhatsApp's media host are exposed to the adapter. */
@@ -21,7 +21,7 @@ int wa_history_path(const uint8_t *,size_t,char *,size_t);
 typedef struct wa_history wa_history;
 wa_history *wa_history_open_sync(const wa_storage *,const uint8_t *,size_t,const uint8_t *,size_t,char missing[129]);
 const char *wa_history_delete_request(const wa_history *);
-wa_tree *wa_history_delete_patch(const wa_history *,const wa_storage *,const char *,const char *,const char *,int,uint64_t,uint64_t);
+wa_tree *wa_history_delete_patch(const wa_history *,const wa_storage *,const char *,const char *,const char *,int,uint64_t,uint64_t,int archive);
 uint64_t wa_history_version(const wa_history *);
 uint64_t wa_history_job_order(const uint8_t *,size_t);
 int wa_history_job_kind(const uint8_t *,size_t);

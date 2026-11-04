@@ -17,7 +17,7 @@ int wa_pair_history_task(wa_pair_session *,unsigned,uint8_t *,size_t,size_t *);
 struct wa_history;
 struct wa_history *wa_pair_history_open(wa_pair_session *,const uint8_t *,size_t,const uint8_t *,size_t,char [129]);
 int wa_pair_history_done(wa_pair_session *,unsigned,const uint8_t *,size_t,uint64_t);
-int wa_pair_delete_chat(wa_pair_session *,const char *,const char *,int,uint64_t,uint64_t);
+int wa_pair_delete_chat(wa_pair_session *,const char *,const char *,int,uint64_t,uint64_t,int);
 void wa_pair_delete_snapshot(wa_pair_session *,const struct wa_history *);
 int wa_pair_sync_key(wa_pair_session *,const char *,const char *);
 void wa_pair_tick(wa_pair_session *,uint64_t monotonic_ms);

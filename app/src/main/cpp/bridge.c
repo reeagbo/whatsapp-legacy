@@ -189,11 +189,11 @@ JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHi
  const char *i=(*env)->GetStringUTFChars(env,id,NULL);int ok=i&&wa_pair_history(session(h),j,a,own==JNI_TRUE,(uint64_t)time,i);
  if(i)(*env)->ReleaseStringUTFChars(env,id,i);(*env)->ReleaseStringUTFChars(env,anchor,a);(*env)->ReleaseStringUTFChars(env,jid,j);return ok?JNI_TRUE:JNI_FALSE;
 }
-JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeDeleteChat(JNIEnv *env,jobject self,jlong h,jstring peer,jstring anchor,jboolean own,jlong time,jlong changed){
+JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeDeleteChat(JNIEnv *env,jobject self,jlong h,jstring peer,jstring anchor,jboolean own,jlong time,jlong changed,jint change){
  (void)self;if(!h||!peer||!anchor||time<=0||changed<=0)return JNI_FALSE;
  const char *p=(*env)->GetStringUTFChars(env,peer,NULL);if(!p)return JNI_FALSE;
  const char *a=(*env)->GetStringUTFChars(env,anchor,NULL);
- int ok=a&&wa_pair_delete_chat(session(h),p,a,own==JNI_TRUE,(uint64_t)time,(uint64_t)changed);
+ int ok=a&&wa_pair_delete_chat(session(h),p,a,own==JNI_TRUE,(uint64_t)time,(uint64_t)changed,(int)change);
  if(a)(*env)->ReleaseStringUTFChars(env,anchor,a);
  (*env)->ReleaseStringUTFChars(env,peer,p);return ok?JNI_TRUE:JNI_FALSE;
 }

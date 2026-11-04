@@ -51,7 +51,7 @@ import java.util.concurrent.TimeUnit
 class MainActivity : Activity() {
     private external fun nativeHistoryRequest(handle: Long, jid: String, anchor: String, own: Boolean, time: Long, id: String): Boolean
     private external fun nativeHistoryTask(handle: Long, slot: Int): ByteArray?
-    private external fun nativeDeleteChat(handle: Long, peer: String, anchor: String, own: Boolean, time: Long, changed: Long): Boolean
+    private external fun nativeDeleteChat(handle: Long, peer: String, anchor: String, own: Boolean, time: Long, changed: Long, change: Int): Boolean
     private external fun nativeDeleteSnapshot(handle: Long, cursor: Long)
     private external fun nativeHistoryDone(handle: Long, slot: Int, task: ByteArray, version: Long): Boolean
     private external fun nativeHistoryPath(task: ByteArray): String?
@@ -114,9 +114,9 @@ class MainActivity : Activity() {
     private var sendButton: Button? = null
     private var connected = false
     private var statusText = "Sin conexión"
-    private data class ChatDelete(val peer: String, val id: String, val outgoing: Boolean, val time: Long, val changed: Long)
-    private val queuedDeletes=java.util.ArrayDeque<ChatDelete>()
-    private var deleteInFlight=false
+    private data class ChatChange(val peer: String, val id: String, val outgoing: Boolean, val time: Long, val changed: Long, val change: Int = 0)
+    private val queuedChatChanges=java.util.ArrayDeque<ChatChange>()
+    private var chatChangeInFlight=false
     private var pendingMessage: String? = null
     private val reconnectPolicy = ReconnectPolicy()
     private var sessionGeneration = 0
@@ -320,8 +320,14 @@ class MainActivity : Activity() {
     }
     private fun archiveChat(jid: String, archive: Boolean) {
         try {
-            store.setArchived(jid,archive)
+            val changed=System.currentTimeMillis()
+            val anchor=store.latestRemoteMessage(jid)
+            store.setArchived(jid,archive,changed)
             showList()
+            if(anchor!=null) {
+                queuedChatChanges.addLast(ChatChange(anchor.peer,anchor.id,anchor.outgoing,anchor.time,changed,if(archive)1 else 2))
+                sendQueuedChatChange()
+            } else debugLog.add("ARCHIVE_SYNC_NO_REMOTE_ANCHOR")
         } catch(error: Exception) { storageFailure(error) }
     }
     private fun chatActions(jid: String) {
@@ -343,20 +349,20 @@ class MainActivity : Activity() {
                 finishHistoryPage(false)
             showList()
             if(anchor!=null) {
-                queuedDeletes.addLast(ChatDelete(anchor.peer,anchor.id,anchor.outgoing,anchor.time,System.currentTimeMillis()))
-                sendQueuedDelete()
+                queuedChatChanges.addLast(ChatChange(anchor.peer,anchor.id,anchor.outgoing,anchor.time,System.currentTimeMillis()))
+                sendQueuedChatChange()
             } else debugLog.add("DELETE_SYNC_NO_REMOTE_ANCHOR")
         } catch(error: Exception) {
             debugLog.failure("CHAT_DELETE_FAILED",error)
         }
     }
-    private fun sendQueuedDelete() {
+    private fun sendQueuedChatChange() {
         val active=connection ?: return
-        if(!connected || deleteInFlight)return
-        while(queuedDeletes.isNotEmpty()) {
-            val request=queuedDeletes.removeFirst()
-            deleteInFlight=active.deleteChat(request)
-            if(deleteInFlight)return
+        if(!connected || chatChangeInFlight)return
+        while(queuedChatChanges.isNotEmpty()) {
+            val request=queuedChatChanges.removeFirst()
+            chatChangeInFlight=active.deleteChat(request)
+            if(chatChangeInFlight)return
             debugLog.add("DELETE_SYNC_NOT_STARTED")
         }
     }
@@ -517,9 +523,10 @@ class MainActivity : Activity() {
                     debugLog.add("HISTORY_EVENT kind=${e[0]} state=$state")
                     if(state<0)finishHistoryPage(false)
                 }
+                "state-sync" -> debugLog.add("APP_STATE_REPLY collection=${e[3]} state=$state")
                 "delete-result" -> {
-                    deleteInFlight=false
-                    debugLog.add("DELETE_SYNC_RESULT state=$state")
+                    chatChangeInFlight=false
+                    debugLog.add("CHAT_CHANGE_SYNC_RESULT action=${e[3]} state=$state")
 
                 }
                 "alias-conflict", "alias-storage" -> debugLog.add("CONTACT_MAPPING kind=${e[0]}")
@@ -532,7 +539,7 @@ class MainActivity : Activity() {
         scheduleContacts()
         scheduleHistory(events.any { it.firstOrNull() in listOf("state-sync","history","ready") })
         requestQueuedHistory()
-        sendQueuedDelete()
+        sendQueuedChatChange()
         updateSend()
         } catch (error: Exception) { storageFailure(error) }
     }
@@ -599,7 +606,10 @@ class MainActivity : Activity() {
                         stage="decode"
                         val missing=arrayOfNulls<String>(1)
                         handle=active.openHistory(task,encrypted,missing)
-                        missing[0]?.let { active.requestSyncKey(it) }
+                        missing[0]?.let {
+                            debugLog.add("APP_STATE_KEY_MISSING")
+                            active.requestSyncKey(it)
+                        }
                         if(handle==0L)throw java.io.IOException("History integrity or format check failed")
                         var importedMessages=0;var importedChats=0;var containsRequestedPeer=false
                         stage="sqlite"
@@ -608,7 +618,7 @@ class MainActivity : Activity() {
                                 if(Thread.currentThread().isInterrupted)throw java.io.InterruptedIOException()
                                 val e=nativeHistoryNext(handle) ?: break
                                 val time=e[5].toLong()
-                                val deletion=e[0] in listOf("delete","delete-chat","clear-chat")
+                                val deletion=e[0] in listOf("delete","delete-chat","clear-chat","archive")
                                 if(deletion && e[2].endsWith("@lid")) {
                                     val phone=active.resolve(e[2])
                                     if(phone!=null && phone.endsWith("@s.whatsapp.net") && !db.link(e[2],phone))
@@ -622,6 +632,10 @@ class MainActivity : Activity() {
                                             containsRequestedPeer=true
                                     }
                                     "delete", "edit" -> db.applyMessageMutation(e[2],e[1],e[4]=="1",e[0],time,e[3])
+                                    "archive" -> {
+                                        db.setArchived(e[2],e[4]=="1",time)
+                                        debugLog.add("SYNC_CHAT_ARCHIVE archived=${e[4]=="1"}")
+                                    }
                                     "delete-chat", "clear-chat" -> {
                                         db.applyChatDeletion(e[2],e[3].toLong(),time,e[0]=="delete-chat")
                                         debugLog.add("SYNC_CHAT_REMOVAL kind=${e[0]}")
@@ -674,7 +688,7 @@ class MainActivity : Activity() {
         automaticReconnect=false
         connection?.cancel();connection=null
         connected=false;pendingMessage=null
-        deleteInFlight=false
+        chatChangeInFlight=false
         render("Sin conexión · No se pudieron guardar los mensajes. Revisa el espacio disponible. Los recibidos pendientes se conservan.","",false)
     }
     private fun showMainMenu() {
@@ -753,8 +767,8 @@ class MainActivity : Activity() {
             automaticReconnect=false
             sessionGeneration++;reconnectPolicy.reset();connection?.cancel();connection=null
             connected=false;pendingMessage=null
-            if(deleteInFlight) {
-                deleteInFlight=false
+            if(chatChangeInFlight) {
+                chatChangeInFlight=false
                 debugLog.add("DELETE_SYNC_INTERRUPTED")
             }
             try {
@@ -798,8 +812,8 @@ class MainActivity : Activity() {
     private fun start(phone: String, identity: File = activeIdentity()) {
         sessionGeneration++
         connection?.cancel()
-        if(deleteInFlight) {
-            deleteInFlight=false
+        if(chatChangeInFlight) {
+            chatChangeInFlight=false
             debugLog.add("DELETE_SYNC_INTERRUPTED")
         }
         finishHistoryPage(false)
@@ -837,9 +851,9 @@ class MainActivity : Activity() {
             if(!finished && handle!=0L && nativeSyncKey(handle,key,UUID.randomUUID().toString().replace("-","").uppercase(Locale.ROOT)))
                 ws?.let { flush(it) }
         }
-        fun deleteChat(request: ChatDelete): Boolean = synchronized(lock) {
+        fun deleteChat(request: ChatChange): Boolean = synchronized(lock) {
             if(finished || handle==0L)return@synchronized false
-            val sent=nativeDeleteChat(handle,request.peer,request.id,request.outgoing,request.time,request.changed)
+            val sent=nativeDeleteChat(handle,request.peer,request.id,request.outgoing,request.time,request.changed,request.change)
             if(sent)ws?.let { flush(it) }
             sent
         }
@@ -1027,8 +1041,8 @@ class MainActivity : Activity() {
                     } else {
                         connection = null
                         connected=false
-                        if(deleteInFlight) {
-                            deleteInFlight=false
+                        if(chatChangeInFlight) {
+                            chatChangeInFlight=false
                             debugLog.add("DELETE_SYNC_DISCONNECTED")
                         }
                         try {

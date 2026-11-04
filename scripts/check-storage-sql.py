@@ -26,7 +26,7 @@ chats = literals(source.split('override fun onCreate',1)[1].split('private fun c
 initial = [('out-1','a@s.whatsapp.net','Texto conservado: café 🌍',1,3,100,'Entregado'),
            ('in-1','b@s.whatsapp.net','Respuesta',0,0,101,'')]
 with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
-    for version in (1,2,3,4):
+    for version in (1,2,3,4,5):
         path = Path(folder)/f'v{version}.db'
         db = sqlite3.connect(path); db.execute('PRAGMA foreign_keys=ON')
         db.execute(chats)
@@ -36,16 +36,17 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
             for sql in new_schema: db.execute(sql)
         if version >= 3:
             for sql in contact_schema: db.execute(sql)
-        if version == 4:
+        if version >= 4:
             for sql in sync_schema: db.execute(sql)
+        if version == 5: db.execute(archive_schema[0])
         db.executemany('INSERT INTO chats(jid,name,updated) VALUES(?,?,?)',[('a@s.whatsapp.net','A',100),('b@s.whatsapp.net','B',101)])
         db.executemany('INSERT INTO messages VALUES(?,?,?,?,?,?,?)',initial);db.commit()
-        migration = (migration2 if version == 1 else []) + (contact_schema if version < 3 else []) + (sync_schema if version < 4 else []) + archive_schema
+        migration = (migration2 if version == 1 else []) + (contact_schema if version < 3 else []) + (sync_schema if version < 4 else []) + (archive_schema if version < 5 else archive_schema[1:])
         db.execute('BEGIN')
         for sql in migration[:-1]: db.execute(sql)
         db.rollback()
         assert db.execute('SELECT * FROM messages ORDER BY id').fetchall() == sorted(initial)
-        assert not any(row[1] == "archived" for row in db.execute("PRAGMA table_info(chats)"))
+        assert not any(row[1] == "archived_changed" for row in db.execute("PRAGMA table_info(chats)"))
         db.execute('BEGIN')
         for sql in migration: db.execute(sql)
         db.commit();db.close()
@@ -66,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     # Exercise every production merge statement, with bound arguments in source order.
     merge = literals(source.split('fun link(',1)[1].split('fun interrupted()',1)[0])
     lid,pn='123456789@lid','34123456789@s.whatsapp.net'
-    args=[(lid,pn),(pn,lid),(lid,lid,lid,pn),(pn,lid),(pn,pn,lid),(pn,lid),(lid,lid,lid,pn),
+    args=[(lid,pn),(pn,lid),(lid,lid,lid,lid,lid,lid,pn),(pn,lid),(pn,pn,lid),(pn,lid),(lid,lid,lid,pn),
           (pn,lid),(lid,pn),(pn,),(lid,),(lid,),(lid,),(lid,),(lid,),
           (pn,),(pn,),(pn,pn,pn),(pn,lid),(lid,)]
     assert len(merge)==len(args)==20
@@ -91,7 +92,7 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     for sql,bound in zip(merge,args): db.execute(sql,bound)
     db.commit();db.close()
     db=sqlite3.connect(path);db.execute('PRAGMA foreign_keys=ON')
-    assert db.execute('SELECT * FROM chats').fetchall()==[(pn,'Nombre manual',200,1)]
+    assert db.execute('SELECT * FROM chats').fetchall()==[(pn,'Nombre manual',200,1,0)]
     assert db.execute('SELECT pn FROM aliases WHERE lid=?',(lid,)).fetchone()==(pn,)
     assert db.execute('SELECT name FROM contact_names WHERE jid=?',(pn,)).fetchone()==('Nombre recibido',)
     assert db.execute('SELECT COUNT(*) FROM messages').fetchone()[0]==3
@@ -145,7 +146,9 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     assert [row[0] for row in db.execute(visible, ('', '-1', ''))] == [pn]
     assert db.execute(visible, ('', '0', '')).fetchall() == []
     assert [row[0] for row in db.execute(visible, ('', '1', ''))] == [pn]
-    db.execute('UPDATE chats SET archived=0 WHERE jid=?',(pn,))
+    archive_update = literals(source.split('fun setArchived',1)[1].split('fun chat(',1)[0])[0]
+    db.execute(archive_update,(0,300,pn,300))
+    db.execute(archive_update,(1,299,pn,299))
     assert [row[0] for row in db.execute(visible, ('', '0', ''))] == [pn]
     assert db.execute(visible, ('', '1', '')).fetchall() == []
     # A replayed remote delete removes the old rows, preserving later traffic.
@@ -163,4 +166,4 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     assert db.execute(cutoff,(phone,'101')).fetchone() is None
     db.commit()
     db.close()
-print('PASS: v1–v4 upgrades to v5, rollback, reopen, Unicode, peer/direction dedup, receipt attribution, alias merges, archive filtering and persistent deletion markers. No compilation performed.')
+print('PASS: v1–v5 upgrades to v6, rollback, reopen, Unicode, peer/direction dedup, receipt attribution, alias merges, archive filtering and persistent deletion markers. No compilation performed.')

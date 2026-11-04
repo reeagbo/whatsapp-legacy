@@ -49,6 +49,8 @@ int wa_history_response(const uint8_t *p,size_t n) {
 /* Authenticated individual-chat state from the regular_high collection. */
 #define STATE_COLLECTION "regular_high"
 #define STATE_VERSION_KEY "app-state-regular-high"
+static const char *collection_name(int low){return low?"regular_low":STATE_COLLECTION;}
+static const char *version_key(int low){return low?"app-state-regular-low":STATE_VERSION_KEY;}
 #define STATE_EVENTS_MAX 20000
 typedef struct {
  char kind[16],id[96],jid[128],text[32];
@@ -72,9 +74,9 @@ static int put_number(unsigned f,uint64_t value,uint8_t *out,size_t cap,size_t *
 static void big64(uint8_t out[8],uint64_t value) {
  for(unsigned i=0;i<8;i++)out[7-i]=(uint8_t)(value>>(i*8));
 }
-uint64_t wa_state_version(const wa_storage *io) {
+uint64_t wa_state_version(const wa_storage *io,int low) {
  uint8_t bytes8[8];size_t n=0;uint64_t v=0;
- if(!io||io->get(io->user,STATE_VERSION_KEY,bytes8,sizeof bytes8,&n)!=1||n!=8)return 0;
+ if(!io||io->get(io->user,version_key(low),bytes8,sizeof bytes8,&n)!=1||n!=8)return 0;
  for(unsigned i=0;i<8;i++)v=(v<<8)|bytes8[i];
  return v;
 }
@@ -118,19 +120,21 @@ static int mutation_keys(const wa_storage *io,wa_slice id,uint8_t keys[160],char
  OPENSSL_cleanse(raw,sizeof raw);return ok;
 }
 static int blob_ref(wa_slice ref,uint8_t *task,size_t cap,size_t *used) {
- wa_slice keydata,path,plain_hash,encrypted_hash;
- return bytes(ref,1,&keydata)&&bytes(ref,2,&path)&&bytes(ref,5,&plain_hash)&&bytes(ref,6,&encrypted_hash)
-  &&put_bytes(1,plain_hash.ptr,plain_hash.len,task,cap,used)
+ wa_slice keydata,path,plain_hash={0},encrypted_hash={0};
+ bytes(ref,5,&plain_hash);bytes(ref,6,&encrypted_hash);
+ return bytes(ref,1,&keydata)&&bytes(ref,2,&path)
+  &&(!plain_hash.ptr||put_bytes(1,plain_hash.ptr,plain_hash.len,task,cap,used))
   &&put_number(2,number(ref,4),task,cap,used)
   &&put_bytes(3,keydata.ptr,keydata.len,task,cap,used)
-  &&put_bytes(4,encrypted_hash.ptr,encrypted_hash.len,task,cap,used)
+  &&(!encrypted_hash.ptr||put_bytes(4,encrypted_hash.ptr,encrypted_hash.len,task,cap,used))
   &&put_bytes(5,path.ptr,path.len,task,cap,used);
 }
-static int state_task(const wa_storage *io,const wa_node *node,int snapshot,uint64_t fallback,const char *request) {
+static int state_task(const wa_storage *io,const wa_node *node,int snapshot,uint64_t fallback,const char *request,int low) {
  if(!node->data||!node->data_len||node->data_len>WA_HISTORY_NOTIFICATION_MAX-4096)return 0;
  size_t cap=node->data_len+4096,n=0;uint8_t *task=malloc(cap);if(!task)return 0;
  wa_slice raw={node->data,node->data_len},external;
- int ok=put_number(101,snapshot?1:2,task,cap,&n)&&put_number(108,fallback,task,cap,&n);
+ int ok=put_number(101,snapshot?1:2,task,cap,&n)&&put_number(108,fallback,task,cap,&n)
+  &&(!low||put_number(110,1,task,cap,&n));
  if(snapshot) {
   ok=ok&&blob_ref(raw,task,cap,&n);
   if(request)ok=ok&&put_bytes(109,(const uint8_t*)request,strlen(request),task,cap,&n);
@@ -142,38 +146,39 @@ static int state_task(const wa_storage *io,const wa_node *node,int snapshot,uint
  if(ok)ok=wa_history_save(io,task,n);
  OPENSSL_cleanse(task,cap);free(task);return ok;
 }
-int wa_state_collect(const wa_storage *io,const wa_node *result,const char *request) {
- int more=0;
+int wa_state_collect(const wa_storage *io,const wa_node *result,const char *request,int low) {
+ int more=0,found=0;
  wa_node *sync=wa_node_child(result,"sync");
  for(wa_node *collection=sync?sync->child:NULL;collection;collection=collection->next) {
   const char *name=wa_node_get(collection,"name");
-  if(strcmp(collection->tag,"collection")||!name||strcmp(name,STATE_COLLECTION))continue;
+  if(strcmp(collection->tag,"collection")||!name||strcmp(name,collection_name(low)))continue;
+  found=1;
   const char *has_more=wa_node_get(collection,"has_more_patches");
   if(has_more&&!strcmp(has_more,"true"))more=1;
   const char *version=wa_node_get(collection,"version");
   uint64_t fallback=version?strtoull(version,NULL,10):0;
   wa_node *snapshot=wa_node_child(collection,"snapshot");
-  if(snapshot&&!state_task(io,snapshot,1,0,request))return 0;
+  if(snapshot&&!state_task(io,snapshot,1,0,request,low))return 0;
   wa_node *patches=wa_node_child(collection,"patches");
   for(wa_node *p=patches?patches->child:collection->child;p;p=p->next)
-   if(!strcmp(p->tag,"patch")&&!state_task(io,p,0,++fallback,NULL))return 0;
+   if(!strcmp(p->tag,"patch")&&!state_task(io,p,0,++fallback,NULL,low))return 0;
  }
- return 1+more;
+ return found?1+more:0;
 }
-static wa_tree *state_query(uint64_t v,const char *id,int snapshot) {
+static wa_tree *state_query(uint64_t v,const char *id,int snapshot,int low) {
  wa_tree *t=wa_tree_create();if(!t)return NULL;
  wa_node *root=wa_node_add(t,NULL,"iq"),*sync=root?wa_node_add(t,root,"sync"):NULL;
  wa_node *collection=sync?wa_node_add(t,sync,"collection"):NULL;
  char version[32];snprintf(version,sizeof version,"%llu",(unsigned long long)v);
  int ok=collection&&wa_node_attr(root,"to","@s.whatsapp.net")&&wa_node_attr(root,"id",id)
   &&wa_node_attr(root,"type","set")&&wa_node_attr(root,"xmlns","w:sync:app:state")
-  &&wa_node_attr(collection,"name",STATE_COLLECTION)&&wa_node_attr(collection,"version",version)
+  &&wa_node_attr(collection,"name",collection_name(low))&&wa_node_attr(collection,"version",version)
   &&wa_node_attr(collection,"return_snapshot",snapshot?"true":"false");
  if(!ok){wa_tree_free(t);return NULL;}return t;
 }
-wa_tree *wa_state_query(const wa_storage *io,const char *id,int force_snapshot) {
- uint64_t v=wa_state_version(io);
- return state_query(v,id,force_snapshot||!v);
+wa_tree *wa_state_query(const wa_storage *io,const char *id,int force_snapshot,int low) {
+ uint64_t v=force_snapshot?0:wa_state_version(io,low);
+ return state_query(v,id,force_snapshot||!v,low);
 }
 int wa_history_save_mutation(const wa_storage *io,const char *kind,const char *peer,const char *target,
  int outgoing,uint64_t time,const char *body) {
@@ -191,7 +196,7 @@ struct wa_history {
  uint8_t *plain;size_t size;reader root,conversations;wa_slice chat;char jid[128];unsigned chat_stage;
  state_action *actions;size_t action_count,action_capacity,action_position;
  uint64_t state_version;
- int state_job;
+ int state_job,low;
  char delete_request[48];
  uint8_t snapshot_hash[128];
 };
@@ -222,7 +227,10 @@ static int add_action(wa_history *h,wa_slice index,wa_slice action) {
  if(!time||time>253402300799000ULL)return 1;
  state_action record={0};record.time=time;
  strcpy(record.jid,parts[1]);
- if(!strcmp(parts[0],"deleteMessageForMe")&&bytes(action,18,&operation)) {
+ if(h->low&&!strcmp(parts[0],"archive")&&bytes(action,17,&operation)) {
+  strcpy(record.kind,"archive");record.outgoing=number(operation,1)!=0;
+ }else if(h->low)return 1;
+ else if(!strcmp(parts[0],"deleteMessageForMe")&&bytes(action,18,&operation)) {
   if(!parts[2][0]||strlen(parts[2])>=sizeof record.id||(strcmp(parts[3],"0")&&strcmp(parts[3],"1")))return 1;
   strcpy(record.kind,"delete");strcpy(record.id,parts[2]);record.outgoing=!strcmp(parts[3],"1");
  }else if((!strcmp(parts[0],"deleteChat")&&bytes(action,22,&operation))
@@ -305,11 +313,13 @@ static int state_open(wa_history *h,const wa_storage *io,wa_slice task,wa_slice 
  }
  if(!io||kind<1||kind>2)return 0;
  int snapshot=kind==1;
+ h->low=number(task,110)==1;
+ const char *collection=collection_name(h->low);
  wa_slice raw=external,version,keyid,expected,snapshot_mac;
  if(!snapshot&&!bytes(task,103,&raw))return 0;
  if(!valid(raw))return 0;
  uint64_t v=bytes(raw,1,&version)?number(version,1):number(task,108);
- uint64_t old=wa_state_version(io);
+ uint64_t old=wa_state_version(io,h->low);
  if(!v||v>UINT32_MAX)return 0;
  int requested=snapshot&&str(task,109,h->delete_request,sizeof h->delete_request);
  if(v<=old&&!requested){h->state_version=old;return 1;}
@@ -330,7 +340,7 @@ static int state_open(wa_history *h,const wa_storage *io,wa_slice task,wa_slice 
    &&(!external.len||state_records(h,io,external,1,0,hm,NULL,missing));
  }
  ok=ok&&HMAC_Update(hm,stamp,sizeof stamp)
-  &&HMAC_Update(hm,(const uint8_t*)STATE_COLLECTION,strlen(STATE_COLLECTION))
+  &&HMAC_Update(hm,(const uint8_t*)collection,strlen(collection))
   &&HMAC_Final(hm,actual,&n)&&!CRYPTO_memcmp(actual,expected.ptr,32);
  HMAC_CTX_free(hm);OPENSSL_cleanse(keys,sizeof keys);
  if(ok&&requested){
@@ -366,24 +376,26 @@ static int replace_snapshot_value(wa_slice snapshot,const uint8_t index_mac[32],
  return k==0;
 }
 wa_tree *wa_history_delete_patch(const wa_history *h,const wa_storage *io,const char *iq_id,
- const char *peer,const char *anchor,int own,uint64_t time,uint64_t changed){
+ const char *peer,const char *anchor,int own,uint64_t time,uint64_t changed,int archive){
  if(!h||!h->delete_request[0]||!address(peer)||!anchor||!*anchor||strlen(anchor)>=96||
-    !time||!changed||h->state_version!=wa_state_version(io)||h->state_version>=UINT32_MAX)return NULL;
+    !time||!changed||h->state_version!=wa_state_version(io,h->low)||h->state_version>=UINT32_MAX)return NULL;
  wa_slice snapshot={h->plain,h->size},key_id,key;
  if(!bytes(snapshot,4,&key_id)||!bytes(key_id,1,&key))return NULL;
+ const char *collection_name_value=collection_name(h->low);
  uint8_t keys[160],message_key[256],message[300],range[340],operation[360],action[400],plain[580];
  size_t kn=0,mn=0,rn=0,on=0,an=0,pn=0;
- char index[170];int il=snprintf(index,sizeof index,"[\"deleteChat\",\"%s\",\"1\"]",peer);
+ char index[170];int il=snprintf(index,sizeof index,h->low?"[\"archive\",\"%s\"]":"[\"deleteChat\",\"%s\",\"1\"]",peer);
  int ok=il>0&&(size_t)il<sizeof index&&
   put_bytes(1,(const uint8_t*)peer,strlen(peer),message_key,sizeof message_key,&kn)&&
   put_number(2,own!=0,message_key,sizeof message_key,&kn)&&
   put_bytes(3,(const uint8_t*)anchor,strlen(anchor),message_key,sizeof message_key,&kn)&&
   put_bytes(1,message_key,kn,message,sizeof message,&mn)&&put_number(2,time/1000,message,sizeof message,&mn)&&
   put_number(1,time/1000,range,sizeof range,&rn)&&put_bytes(3,message,mn,range,sizeof range,&rn)&&
-  put_bytes(1,range,rn,operation,sizeof operation,&on)&&put_number(1,changed,action,sizeof action,&an)&&
-  put_bytes(22,operation,on,action,sizeof action,&an)&&
+  (!h->low||put_number(1,archive!=0,operation,sizeof operation,&on))&&
+  put_bytes(h->low?2:1,range,rn,operation,sizeof operation,&on)&&put_number(1,changed,action,sizeof action,&an)&&
+  put_bytes(h->low?17:22,operation,on,action,sizeof action,&an)&&
   put_bytes(1,(const uint8_t*)index,(size_t)il,plain,sizeof plain,&pn)&&
-  put_bytes(2,action,an,plain,sizeof plain,&pn)&&put_number(4,6,plain,sizeof plain,&pn)&&
+  put_bytes(2,action,an,plain,sizeof plain,&pn)&&put_number(4,h->low?3:6,plain,sizeof plain,&pn)&&
   mutation_keys(io,key,keys,NULL);
  uint8_t value[sizeof plain+64],mac_input[sizeof value+73],mac[64],index_mac[32];
  unsigned mac_len=0;int a=0,b=0;
@@ -397,7 +409,7 @@ wa_tree *wa_history_delete_patch(const wa_history *h,const wa_storage *io,const 
   mac_input[input++]=1;memcpy(mac_input+input,key.ptr,key.len);input+=key.len;
   memcpy(mac_input+input,value,vn);input+=vn;big64(mac_input+input,key.len+1);input+=8;
   uint8_t hash[128],snapshot_input[160],snapshot_mac[32],patch_input[96],patch_mac[32],stamp[8];
-  size_t name_len=strlen(STATE_COLLECTION);
+  size_t name_len=strlen(collection_name_value);
   memcpy(hash,h->snapshot_hash,sizeof hash);big64(stamp,h->state_version+1);
   ok=HMAC(EVP_sha512(),keys+64,32,mac_input,input,mac,&mac_len)&&
    HMAC(EVP_sha256(),keys,32,(const uint8_t*)index,(size_t)il,index_mac,&mac_len)&&
@@ -405,11 +417,11 @@ wa_tree *wa_history_delete_patch(const wa_history *h,const wa_storage *io,const 
   if(ok){
    memcpy(value+vn,mac,32);vn+=32;
    memcpy(snapshot_input,hash,128);memcpy(snapshot_input+128,stamp,8);
-   memcpy(snapshot_input+136,STATE_COLLECTION,name_len);
+   memcpy(snapshot_input+136,collection_name_value,name_len);
    ok=HMAC(EVP_sha256(),keys+96,32,snapshot_input,136+name_len,snapshot_mac,&mac_len)!=NULL;
    if(ok){
     memcpy(patch_input,snapshot_mac,32);memcpy(patch_input+32,mac,32);memcpy(patch_input+64,stamp,8);
-    memcpy(patch_input+72,STATE_COLLECTION,name_len);
+    memcpy(patch_input+72,collection_name_value,name_len);
     ok=HMAC(EVP_sha256(),keys+128,32,patch_input,72+name_len,patch_mac,&mac_len)!=NULL;
    }
   }
@@ -422,7 +434,7 @@ wa_tree *wa_history_delete_patch(const wa_history *h,const wa_storage *io,const 
    put_bytes(4,snapshot_mac,32,patch,sizeof patch,&patchn)&&put_bytes(5,patch_mac,32,patch,sizeof patch,&patchn)&&
    put_bytes(6,key_id.ptr,key_id.len,patch,sizeof patch,&patchn);
   if(ok){
-   tree=state_query(h->state_version,iq_id,0);
+   tree=state_query(h->state_version,iq_id,0,h->low);
    wa_node *collection=tree?wa_node_child(wa_node_child(tree->root,"sync"),"collection"):NULL;
    wa_node *node=collection?wa_node_add(tree,collection,"patch"):NULL;
    if(node&&patchn<=WA_NODE_BYTES-tree->used){
@@ -451,15 +463,18 @@ wa_history *wa_history_open_sync(const wa_storage *io,const uint8_t *notificatio
  }
  if(!kind&&bytes(s,11,&v)&&v.len){compressed=(uint8_t*)v.ptr;cn=v.len;}
  else {
-  wa_slice mk,eh,ph;uint8_t hash[32],expanded[112],mac[32];size_t expanded_n=sizeof expanded;unsigned mn=0;
-  if(!enc||en<26||en>WA_HISTORY_DOWNLOAD_MAX||(en-10)%16||!bytes(s,3,&mk)||mk.len!=32||!bytes(s,4,&eh)||eh.len!=32||!bytes(s,1,&ph)||ph.len!=32||!SHA256(enc,en,hash)||CRYPTO_memcmp(hash,eh.ptr,32))return NULL;
+  wa_slice mk,eh={0},ph={0};uint8_t hash[32],expanded[112],mac[32];size_t expanded_n=sizeof expanded;unsigned mn=0;
+  bytes(s,4,&eh);bytes(s,1,&ph);
+  if(!enc||en<26||en>WA_HISTORY_DOWNLOAD_MAX||(en-10)%16||!bytes(s,3,&mk)||mk.len!=32||
+     (!kind&&(!eh.ptr||!ph.ptr))||(ph.ptr&&ph.len!=32)||
+     (eh.ptr&&(eh.len!=32||!SHA256(enc,en,hash)||CRYPTO_memcmp(hash,eh.ptr,32))))return NULL;
   EVP_PKEY_CTX *k=EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF,NULL);uint8_t salt[32]={0};const char *info=kind?"WhatsApp App State Keys":"WhatsApp History Keys";
   int ok=k&&EVP_PKEY_derive_init(k)>0&&EVP_PKEY_CTX_set_hkdf_md(k,EVP_sha256())>0&&EVP_PKEY_CTX_set1_hkdf_salt(k,salt,32)>0&&EVP_PKEY_CTX_set1_hkdf_key(k,mk.ptr,32)>0&&EVP_PKEY_CTX_add1_hkdf_info(k,(const uint8_t*)info,(int)strlen(info))>0&&EVP_PKEY_derive(k,expanded,&expanded_n)>0;EVP_PKEY_CTX_free(k);
   HMAC_CTX *hm=HMAC_CTX_new();ok=ok&&hm&&HMAC_Init_ex(hm,expanded+48,32,EVP_sha256(),NULL)&&HMAC_Update(hm,expanded,16)&&HMAC_Update(hm,enc,en-10)&&HMAC_Final(hm,mac,&mn)&&!CRYPTO_memcmp(mac,enc+en-10,10);HMAC_CTX_free(hm);
   if(!ok){OPENSSL_cleanse(expanded,sizeof expanded);return NULL;}
   compressed=malloc(en);if(!compressed){OPENSSL_cleanse(expanded,sizeof expanded);return NULL;}allocated=1;
   EVP_CIPHER_CTX *aes=EVP_CIPHER_CTX_new();int a=0,b=0;ok=aes&&EVP_DecryptInit_ex(aes,EVP_aes_256_cbc(),NULL,expanded+16,expanded)>0&&EVP_DecryptUpdate(aes,compressed,&a,enc,(int)(en-10))>0&&EVP_DecryptFinal_ex(aes,compressed+a,&b)>0;EVP_CIPHER_CTX_free(aes);OPENSSL_cleanse(expanded,sizeof expanded);cn=(size_t)(a+b);
-  uint64_t length=number(s,2);ok=ok&&(!length||length==cn)&&SHA256(compressed,cn,hash)&&!CRYPTO_memcmp(hash,ph.ptr,32);if(!ok){OPENSSL_cleanse(compressed,en);free(compressed);return NULL;}
+  uint64_t length=number(s,2);ok=ok&&(!length||length==cn)&&(!ph.ptr||(SHA256(compressed,cn,hash)&&!CRYPTO_memcmp(hash,ph.ptr,32)));if(!ok){OPENSSL_cleanse(compressed,en);free(compressed);return NULL;}
  }
  wa_history *h=calloc(1,sizeof *h);
  int ok=h&&(kind?state_open(h,io,s,(wa_slice){compressed,cn},missing):inflate_data(compressed,cn,&h->plain,&h->size));
@@ -478,13 +493,13 @@ uint64_t wa_history_job_order(const uint8_t *p,size_t n){
  return number(task,108);
 }
 int wa_history_commit(const wa_storage *io,unsigned slot,const uint8_t *p,size_t n,uint64_t version){
- int kind=wa_history_job_kind(p,n);
- if((kind==1||kind==2)&&version>wa_state_version(io)){
+ int kind=wa_history_job_kind(p,n),low=number((wa_slice){p,n},110)==1;
+ if((kind==1||kind==2)&&version>wa_state_version(io,low)){
   uint8_t *stored=malloc(n);if(!stored)return 0;
   size_t size=0;int matches=wa_history_task(io,slot,stored,n,&size)==1&&size==n&&!CRYPTO_memcmp(p,stored,n);
   OPENSSL_cleanse(stored,n);free(stored);if(!matches)return 0;
   uint8_t data[8];big64(data,version);
-  if(!io->put(io->user,STATE_VERSION_KEY,data,sizeof data))return 0;
+  if(!io->put(io->user,version_key(low),data,sizeof data))return 0;
  }
  return wa_history_done(io,slot,p,n);
 }

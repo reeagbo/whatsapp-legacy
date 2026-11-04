@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
 /** Android conversation storage. Protocol/Signal state belongs to the C core. */
-class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 5) {
+class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 6) {
     data class Chat(val jid: String, val name: String, val preview: String, val time: Long, val pushName: String, val archived: Boolean)
     data class Message(val id: String, val peer: String, val text: String, val outgoing: Boolean,
                        val status: Int, val time: Long, val note: String)
@@ -20,6 +20,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         createContacts(db)
         createSync(db)
         addArchiveColumn(db)
+        addArchiveTimestamp(db)
     }
     private fun createMessages(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE messages(id TEXT NOT NULL, peer TEXT NOT NULL REFERENCES chats(jid), text TEXT NOT NULL, outgoing INTEGER NOT NULL, status INTEGER NOT NULL, time INTEGER NOT NULL, note TEXT NOT NULL, PRIMARY KEY(peer,id,outgoing))")
@@ -37,6 +38,9 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
     private fun addArchiveColumn(db: SQLiteDatabase) {
         db.execSQL("ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
     }
+    private fun addArchiveTimestamp(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE chats ADD COLUMN archived_changed INTEGER NOT NULL DEFAULT 0")
+    }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
             // SQLiteOpenHelper wraps the migration in one transaction.
@@ -49,6 +53,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         if (oldVersion < 3) createContacts(db)
         if (oldVersion < 4) createSync(db)
         if (oldVersion < 5) addArchiveColumn(db)
+        if (oldVersion < 6) addArchiveTimestamp(db)
     }
     fun addChat(address: String, name: String = "", updated: Long = System.currentTimeMillis()) {
         val jid = resolve(address)
@@ -64,8 +69,12 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         "SELECT 1 FROM chats WHERE jid=?",arrayOf(resolve(jid))
     ).use { it.moveToFirst() }
     fun chats(archived: Boolean? = null): List<Chat> = queryChats(null,archived)
-    fun setArchived(jid: String, archived: Boolean) {
-        writableDatabase.update("chats",ContentValues().apply { put("archived",if(archived)1 else 0) },"jid=?",arrayOf(resolve(jid)))
+    fun setArchived(jid: String, archived: Boolean, changed: Long) = historyTransaction {
+        val peer=resolve(jid)
+        addChat(peer,updated=0)
+        val db=writableDatabase
+        db.execSQL("UPDATE chats SET archived=?,archived_changed=? WHERE jid=? AND archived_changed<=?",
+            arrayOf(if(archived)1 else 0,changed,peer,changed))
     }
     fun chat(jid: String): Chat? = queryChats(resolve(jid)).firstOrNull()
     private fun queryChats(jid: String?, archived: Boolean? = null): List<Chat> = readableDatabase.rawQuery(
@@ -233,8 +242,8 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
             // Never silently move an already resolved conversation to another person.
             if (previous != lid) { db.setTransactionSuccessful(); return previous == pn }
             db.execSQL("INSERT INTO aliases(lid,pn) VALUES(?,?)", arrayOf(lid,pn))
-            db.execSQL("INSERT OR IGNORE INTO chats(jid,name,updated,archived) SELECT ?,name,updated,archived FROM chats WHERE jid=?", arrayOf(pn,lid))
-            db.execSQL("UPDATE chats SET name=CASE WHEN name='' THEN COALESCE((SELECT name FROM chats WHERE jid=?),'') ELSE name END,updated=MAX(updated,COALESCE((SELECT updated FROM chats WHERE jid=?),updated)),archived=MAX(archived,COALESCE((SELECT archived FROM chats WHERE jid=?),0)) WHERE jid=?", arrayOf(lid,lid,lid,pn))
+            db.execSQL("INSERT OR IGNORE INTO chats(jid,name,updated,archived,archived_changed) SELECT ?,name,updated,archived,archived_changed FROM chats WHERE jid=?", arrayOf(pn,lid))
+            db.execSQL("UPDATE chats SET name=CASE WHEN name='' THEN COALESCE((SELECT name FROM chats WHERE jid=?),'') ELSE name END,updated=MAX(updated,COALESCE((SELECT updated FROM chats WHERE jid=?),updated)),archived=CASE WHEN COALESCE((SELECT archived_changed FROM chats WHERE jid=?),-1)>archived_changed THEN (SELECT archived FROM chats WHERE jid=?) WHEN archived_changed=0 THEN MAX(archived,COALESCE((SELECT archived FROM chats WHERE jid=? AND archived_changed=0),0)) ELSE archived END,archived_changed=MAX(archived_changed,COALESCE((SELECT archived_changed FROM chats WHERE jid=?),0)) WHERE jid=?", arrayOf(lid,lid,lid,lid,lid,lid,pn))
             db.execSQL("INSERT OR IGNORE INTO message_mutations(peer,id,outgoing,kind,changed,text) SELECT ?,id,outgoing,kind,changed,text FROM message_mutations WHERE peer=?",arrayOf(pn,lid))
             db.execSQL("INSERT OR REPLACE INTO message_mutations(peer,id,outgoing,kind,changed,text) SELECT ?,old.id,old.outgoing,old.kind,old.changed,old.text FROM message_mutations old JOIN message_mutations current ON current.peer=? AND current.id=old.id AND current.outgoing=old.outgoing WHERE old.peer=? AND current.kind!='delete' AND (old.kind='delete' OR old.changed>current.changed)",arrayOf(pn,pn,lid))
             db.execSQL("INSERT OR IGNORE INTO chat_deletions(peer,cutoff,changed,remove_chat) SELECT ?,cutoff,changed,remove_chat FROM chat_deletions WHERE peer=?",arrayOf(pn,lid))

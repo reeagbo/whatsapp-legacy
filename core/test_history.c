@@ -52,7 +52,7 @@ int main(void) {
  assert(put_bytes(109,(const uint8_t*)"request",7,descriptor,sizeof descriptor,&dn));
  big64(stored_version,1);assert(io.put(io.user,STATE_VERSION_KEY,stored_version,8));
  h=calloc(1,sizeof *h);assert(h&&state_open(h,&io,(wa_slice){descriptor,dn},(wa_slice){snapshot,sn},NULL));
- wa_tree *tree=wa_history_delete_patch(h,&io,"outgoing-test","123456789@lid","last",0,1700000000000ULL,1700000002000ULL);
+ wa_tree *tree=wa_history_delete_patch(h,&io,"outgoing-test","123456789@lid","last",0,1700000000000ULL,1700000002000ULL,0);
  assert(tree);wa_history_free(h);
  wa_node *collection=wa_node_child(wa_node_child(tree->root,"sync"),"collection");
  assert(collection&&!strcmp(wa_node_get(collection,"version"),"1"));
@@ -64,7 +64,7 @@ int main(void) {
  h=wa_history_open_sync(&io,patch_task,ptn,NULL,0,NULL);
  assert(h&&wa_history_next(h,&e,&time)==1&&!strcmp(e.kind,"delete-chat")&&!strcmp(e.jid,"123456789@lid"));
  wa_history_free(h);wa_tree_free(tree);
- assert(wa_state_version(&io)==1&&io.put(io.user,STATE_VERSION_KEY,NULL,0)&&io.put(io.user,filename,NULL,0));
+ assert(wa_state_version(&io,0)==1&&io.put(io.user,STATE_VERSION_KEY,NULL,0)&&io.put(io.user,filename,NULL,0));
  wa_storage_posix_close(&io);assert(!rmdir(folder));
  /* A remote chat removal carries the last included message in Unix seconds. */
  const uint8_t index[]="[\"deleteChat\",\"123456789@lid\",\"1\"]";
@@ -78,5 +78,21 @@ int main(void) {
  assert(wa_history_next(h,&e,&time)==1&&!strcmp(e.kind,"delete-chat")&&
         !strcmp(e.jid,"123456789@lid")&&!strcmp(e.text,"1700000000999")&&time==1700000001000ULL);
  assert(wa_history_next(h,&e,&time)==0);wa_history_free(h);
+ const uint8_t archive_index[]="[\"archive\",\"123456789@lid\"]";
+ for(int archived=0;archived<=1;archived++){
+  an=0;on=0;
+  assert(put_number(1,(uint64_t)archived,operation,sizeof operation,&on));
+  assert(put_number(1,1700000001000ULL,action,sizeof action,&an));
+  assert(put_bytes(17,operation,on,action,sizeof action,&an));
+  h=calloc(1,sizeof *h);assert(h);h->state_job=2;h->low=1;
+  assert(add_action(h,(wa_slice){archive_index,sizeof archive_index-1},(wa_slice){action,an}));
+  assert(wa_history_next(h,&e,&time)==1&&!strcmp(e.kind,"archive")&&e.state==archived);
+  wa_history_free(h);
+ }
+ uint8_t ref[80],mapped_ref[100];size_t refn=0,mappedn=0;
+ assert(put_bytes(1,raw_key,sizeof raw_key,ref,sizeof ref,&refn));
+ assert(put_bytes(2,(const uint8_t*)"/test",5,ref,sizeof ref,&refn));
+ assert(blob_ref((wa_slice){ref,refn},mapped_ref,sizeof mapped_ref,&mappedn));
+ check_path("/test",1);
  puts("PASS: independent history media fixture, hashes/HMAC, inline decompression, original dates/status, names, aliases and durable replay/acknowledgement");return 0;
 }
