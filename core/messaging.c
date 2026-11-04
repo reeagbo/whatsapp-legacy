@@ -17,6 +17,8 @@ struct wa_messenger {
  int history_mode;
  uint64_t sync_due,last_key_request,sync_requested_version;int sync_more;unsigned sync_sequence;char sync_query[48];
  int ready,boot,pending,phase;uint64_t now,deadline;
+ char delete_peer[128],delete_anchor[96],delete_id[48],delete_snapshot[48];
+ uint64_t delete_time,delete_changed,delete_deadline;int delete_own;
  char peer[128],route[128],id[96],query[128];uint8_t text[WA_TEXT_MAX+1];size_t text_len;
  struct {char jid[128];int own;} devices[DEVICES];size_t count;
  wa_message_event events[EVENTS];size_t event_count;
@@ -370,16 +372,57 @@ static int incoming(wa_messenger *m,const wa_node *node){
  if(got||history){wa_tree *t=wa_tree_create();if(!t)return 0;wa_node *r=wa_node_add(t,NULL,"receipt");ok=ok&&r&&wa_node_attr(r,"to",from)&&wa_node_attr(r,"id",id)&&(!history||wa_node_attr(r,"type","hist_sync"));if(ok)ok=send(m,t);else wa_tree_free(t);}
  return ok;
 }
+static void delete_result(wa_messenger *m,int state){
+ event(m,"delete-result",m->delete_id,"","",state);
+ m->delete_id[0]=0;m->delete_snapshot[0]=0;m->delete_deadline=0;
+}
+int wa_messenger_delete_chat(wa_messenger *m,const char *peer,const char *anchor,int own,uint64_t time,uint64_t changed){
+ char jid[128];uint8_t nonce[12];
+ if(!m||!m->ready||m->delete_id[0]||!base(peer,jid)||!anchor||!*anchor||strlen(anchor)>=96||
+    !time||!changed||RAND_bytes(nonce,sizeof nonce)!=1)return 0;
+ char token[25];for(size_t i=0;i<sizeof nonce;i++)snprintf(token+i*2,3,"%02x",nonce[i]);
+ snprintf(m->delete_id,sizeof m->delete_id,"legacy-delete-%s",token);
+ snprintf(m->delete_snapshot,sizeof m->delete_snapshot,"legacy-snap-%s",token);
+ copy(m->delete_peer,sizeof m->delete_peer,jid);copy(m->delete_anchor,sizeof m->delete_anchor,anchor);
+ m->delete_time=time;m->delete_changed=changed;m->delete_own=own;m->delete_deadline=m->now+90000;
+ if(send(m,wa_state_query(&m->io,m->delete_snapshot,1)))return 1;
+ m->delete_id[0]=0;m->delete_snapshot[0]=0;m->delete_deadline=0;return 0;
+}
+void wa_messenger_delete_snapshot(wa_messenger *m,const struct wa_history *h){
+ if(!m||!m->delete_snapshot[0]||strcmp(m->delete_snapshot,wa_history_delete_request(h)))return;
+ m->delete_snapshot[0]=0;
+ wa_tree *patch=wa_history_delete_patch(h,&m->io,m->delete_id,m->delete_peer,m->delete_anchor,
+    m->delete_own,m->delete_time,m->delete_changed);
+ if(!send(m,patch))delete_result(m,-1);
+}
 int wa_messenger_node(wa_messenger *m,const wa_node *node){
  if(!m||!node)return 0;const char *id=wa_node_get(node,"id"),*type=wa_node_get(node,"type");
  if(!strcmp(node->tag,"notification")&&type&&!strcmp(type,"server_sync")){
   m->sync_due=m->now+1000;return ack(m,node,"notification");
  }
  if(!strcmp(node->tag,"iq")&&id){
+  if(m->delete_snapshot[0]&&!strcmp(id,m->delete_snapshot)){
+   wa_node *sync=wa_node_child(node,"sync");
+   wa_node *collection=wa_node_child(sync,"collection");
+   const char *name=wa_node_get(collection,"name");
+   if(type&&!strcmp(type,"result")&&name&&!strcmp(name,"regular_high")&&wa_node_child(collection,"snapshot")&&
+      wa_state_collect(&m->io,node,m->delete_snapshot))event(m,"state-sync","","","",0);
+   else delete_result(m,-1);
+   return 1;
+  }
+  if(m->delete_id[0]&&!strcmp(id,m->delete_id)){
+   wa_node *collection=wa_node_child(wa_node_child(node,"sync"),"collection");
+   const char *collection_type=wa_node_get(collection,"type");
+   int accepted=type&&!strcmp(type,"result")&&!wa_node_child(node,"error")&&
+     !wa_node_child(collection,"error")&&(!collection_type||strcmp(collection_type,"error"));
+   delete_result(m,accepted?1:-1);
+   if(accepted)m->sync_due=0;
+   return 1;
+  }
   if(m->sync_query[0]&&!strcmp(id,m->sync_query)){
    m->sync_query[0]=0;
    if(type&&!strcmp(type,"result")){
-    int collected=wa_state_collect(&m->io,node);
+    int collected=wa_state_collect(&m->io,node,NULL);
     m->sync_more=collected>1;
     event(m,"state-sync","","","",collected?0:-1);
    }else event(m,"state-sync","","","",-2);
@@ -410,12 +453,13 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
 void wa_messenger_tick(wa_messenger *m,uint64_t now){if(!m)return;int first=m->now==0;m->now=now;
  /* The first tick establishes the external monotonic clock origin. */
  if(first&&m->deadline)m->deadline+=now;
- if(m->ready&&(now>=m->sync_due||(m->sync_more&&wa_state_version(&m->io)>m->sync_requested_version))){
+ if(m->delete_deadline&&now>=m->delete_deadline)delete_result(m,-2);
+ if(m->ready&&!m->delete_id[0]&&(now>=m->sync_due||(m->sync_more&&wa_state_version(&m->io)>m->sync_requested_version))){
   m->sync_due=now+120000;
   m->sync_more=0;
   m->sync_requested_version=wa_state_version(&m->io);
   snprintf(m->sync_query,sizeof m->sync_query,"legacy-state-%u",++m->sync_sequence);
-  if(!send(m,wa_state_query(&m->io,m->sync_query)))m->sync_query[0]=0;
+  if(!send(m,wa_state_query(&m->io,m->sync_query,0)))m->sync_query[0]=0;
  }
  if(m->deadline&&now>=m->deadline){m->deadline=0;if(m->pending){event(m,"status",m->id,m->peer,m->phase==3?"Sin confirmación; el envío podría haberse aceptado":"La consulta agotó el tiempo",m->phase==3?-2:-1);m->pending=0;m->phase=0;}if(m->boot){m->boot=0;event(m,"notice","","","Tiempo agotado al preparar la mensajería.",-1);}}
 }

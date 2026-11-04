@@ -4,6 +4,7 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/kdf.h>
+#include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <zlib.h>
 #include <stdio.h>
@@ -125,12 +126,15 @@ static int blob_ref(wa_slice ref,uint8_t *task,size_t cap,size_t *used) {
   &&put_bytes(4,encrypted_hash.ptr,encrypted_hash.len,task,cap,used)
   &&put_bytes(5,path.ptr,path.len,task,cap,used);
 }
-static int state_task(const wa_storage *io,const wa_node *node,int snapshot,uint64_t fallback) {
+static int state_task(const wa_storage *io,const wa_node *node,int snapshot,uint64_t fallback,const char *request) {
  if(!node->data||!node->data_len||node->data_len>WA_HISTORY_NOTIFICATION_MAX-4096)return 0;
  size_t cap=node->data_len+4096,n=0;uint8_t *task=malloc(cap);if(!task)return 0;
  wa_slice raw={node->data,node->data_len},external;
  int ok=put_number(101,snapshot?1:2,task,cap,&n)&&put_number(108,fallback,task,cap,&n);
- if(snapshot)ok=ok&&blob_ref(raw,task,cap,&n);
+ if(snapshot) {
+  ok=ok&&blob_ref(raw,task,cap,&n);
+  if(request)ok=ok&&put_bytes(109,(const uint8_t*)request,strlen(request),task,cap,&n);
+ }
  else {
   ok=ok&&put_bytes(103,raw.ptr,raw.len,task,cap,&n);
   if(bytes(raw,3,&external))ok=ok&&blob_ref(external,task,cap,&n);
@@ -138,7 +142,7 @@ static int state_task(const wa_storage *io,const wa_node *node,int snapshot,uint
  if(ok)ok=wa_history_save(io,task,n);
  OPENSSL_cleanse(task,cap);free(task);return ok;
 }
-int wa_state_collect(const wa_storage *io,const wa_node *result) {
+int wa_state_collect(const wa_storage *io,const wa_node *result,const char *request) {
  int more=0;
  wa_node *sync=wa_node_child(result,"sync");
  for(wa_node *collection=sync?sync->child:NULL;collection;collection=collection->next) {
@@ -149,23 +153,27 @@ int wa_state_collect(const wa_storage *io,const wa_node *result) {
   const char *version=wa_node_get(collection,"version");
   uint64_t fallback=version?strtoull(version,NULL,10):0;
   wa_node *snapshot=wa_node_child(collection,"snapshot");
-  if(snapshot&&!state_task(io,snapshot,1,0))return 0;
+  if(snapshot&&!state_task(io,snapshot,1,0,request))return 0;
   wa_node *patches=wa_node_child(collection,"patches");
   for(wa_node *p=patches?patches->child:collection->child;p;p=p->next)
-   if(!strcmp(p->tag,"patch")&&!state_task(io,p,0,++fallback))return 0;
+   if(!strcmp(p->tag,"patch")&&!state_task(io,p,0,++fallback,NULL))return 0;
  }
  return 1+more;
 }
-wa_tree *wa_state_query(const wa_storage *io,const char *id) {
+static wa_tree *state_query(uint64_t v,const char *id,int snapshot) {
  wa_tree *t=wa_tree_create();if(!t)return NULL;
  wa_node *root=wa_node_add(t,NULL,"iq"),*sync=root?wa_node_add(t,root,"sync"):NULL;
  wa_node *collection=sync?wa_node_add(t,sync,"collection"):NULL;
- uint64_t v=wa_state_version(io);char version[32];snprintf(version,sizeof version,"%llu",(unsigned long long)v);
+ char version[32];snprintf(version,sizeof version,"%llu",(unsigned long long)v);
  int ok=collection&&wa_node_attr(root,"to","@s.whatsapp.net")&&wa_node_attr(root,"id",id)
   &&wa_node_attr(root,"type","set")&&wa_node_attr(root,"xmlns","w:sync:app:state")
   &&wa_node_attr(collection,"name",STATE_COLLECTION)&&wa_node_attr(collection,"version",version)
-  &&wa_node_attr(collection,"return_snapshot",v?"false":"true");
+  &&wa_node_attr(collection,"return_snapshot",snapshot?"true":"false");
  if(!ok){wa_tree_free(t);return NULL;}return t;
+}
+wa_tree *wa_state_query(const wa_storage *io,const char *id,int force_snapshot) {
+ uint64_t v=wa_state_version(io);
+ return state_query(v,id,force_snapshot||!v);
 }
 int wa_history_save_mutation(const wa_storage *io,const char *kind,const char *peer,const char *target,
  int outgoing,uint64_t time,const char *body) {
@@ -184,6 +192,8 @@ struct wa_history {
  state_action *actions;size_t action_count,action_capacity,action_position;
  uint64_t state_version;
  int state_job;
+ char delete_request[48];
+ uint8_t snapshot_hash[128];
 };
 static int index_parts(wa_slice index,char parts[4][128]) {
  /* Supported indices use unescaped ASCII strings. Other records are still
@@ -301,7 +311,8 @@ static int state_open(wa_history *h,const wa_storage *io,wa_slice task,wa_slice 
  uint64_t v=bytes(raw,1,&version)?number(version,1):number(task,108);
  uint64_t old=wa_state_version(io);
  if(!v||v>UINT32_MAX)return 0;
- if(v<=old){h->state_version=old;return 1;}
+ int requested=snapshot&&str(task,109,h->delete_request,sizeof h->delete_request);
+ if(v<=old&&!requested){h->state_version=old;return 1;}
  if(!snapshot&&v!=old+1)return 0;
  if(!bytes(raw,snapshot?4:6,&keyid)||!bytes(keyid,1,&keyid)
    ||!bytes(raw,snapshot?3:5,&expected)||expected.len!=32)return 0;
@@ -322,8 +333,105 @@ static int state_open(wa_history *h,const wa_storage *io,wa_slice task,wa_slice 
   &&HMAC_Update(hm,(const uint8_t*)STATE_COLLECTION,strlen(STATE_COLLECTION))
   &&HMAC_Final(hm,actual,&n)&&!CRYPTO_memcmp(actual,expected.ptr,32);
  HMAC_CTX_free(hm);OPENSSL_cleanse(keys,sizeof keys);
+ if(ok&&requested){
+  h->plain=malloc(raw.len);if(!h->plain)return 0;
+  memcpy(h->plain,raw.ptr,raw.len);h->size=raw.len;
+  memcpy(h->snapshot_hash,hash,sizeof hash);
+  if(v<=old)h->action_count=0;
+ }
  if(ok)h->state_version=v;
  return ok;
+}
+/* A delete is built only from a freshly authenticated snapshot. Never advance
+ * the receive cursor on a send; the server's next sync supplies that version. */
+const char *wa_history_delete_request(const wa_history *h){return h?h->delete_request:"";}
+static int hash_mac(uint8_t hash[128],const uint8_t value[32],int subtract){
+ uint8_t contribution[128];
+ if(!expand(value,32,"WhatsApp Patch Integrity",contribution,sizeof contribution))return 0;
+ for(unsigned i=0;i<128;i+=2){
+  unsigned before=hash[i]+(hash[i+1]<<8),delta=contribution[i]+(contribution[i+1]<<8);
+  unsigned result=subtract?before-delta:before+delta;
+  hash[i]=(uint8_t)result;hash[i+1]=(uint8_t)(result>>8);
+ }
+ return 1;
+}
+static int replace_snapshot_value(wa_slice snapshot,const uint8_t index_mac[32],uint8_t hash[128]){
+ reader r={snapshot.ptr,snapshot.len,0};unsigned f,w;uint64_t v;wa_slice record,index,value;int k;
+ while((k=next(&r,&f,&w,&record,&v))>0){
+  if(f!=2||w!=2||!bytes(record,1,&index)||!bytes(index,1,&index)||index.len!=32||
+     CRYPTO_memcmp(index.ptr,index_mac,32))continue;
+  return bytes(record,2,&value)&&bytes(value,1,&value)&&value.len>=32&&
+   hash_mac(hash,value.ptr+value.len-32,1);
+ }
+ return k==0;
+}
+wa_tree *wa_history_delete_patch(const wa_history *h,const wa_storage *io,const char *iq_id,
+ const char *peer,const char *anchor,int own,uint64_t time,uint64_t changed){
+ if(!h||!h->delete_request[0]||!address(peer)||!anchor||!*anchor||strlen(anchor)>=96||
+    !time||!changed||h->state_version!=wa_state_version(io)||h->state_version>=UINT32_MAX)return NULL;
+ wa_slice snapshot={h->plain,h->size},key_id,key;
+ if(!bytes(snapshot,4,&key_id)||!bytes(key_id,1,&key))return NULL;
+ uint8_t keys[160],message_key[256],message[300],range[340],operation[360],action[400],plain[580];
+ size_t kn=0,mn=0,rn=0,on=0,an=0,pn=0;
+ char index[170];int il=snprintf(index,sizeof index,"[\"deleteChat\",\"%s\",\"1\"]",peer);
+ int ok=il>0&&(size_t)il<sizeof index&&
+  put_bytes(1,(const uint8_t*)peer,strlen(peer),message_key,sizeof message_key,&kn)&&
+  put_number(2,own!=0,message_key,sizeof message_key,&kn)&&
+  put_bytes(3,(const uint8_t*)anchor,strlen(anchor),message_key,sizeof message_key,&kn)&&
+  put_bytes(1,message_key,kn,message,sizeof message,&mn)&&put_number(2,time/1000,message,sizeof message,&mn)&&
+  put_number(1,time/1000,range,sizeof range,&rn)&&put_bytes(3,message,mn,range,sizeof range,&rn)&&
+  put_bytes(1,range,rn,operation,sizeof operation,&on)&&put_number(1,changed,action,sizeof action,&an)&&
+  put_bytes(22,operation,on,action,sizeof action,&an)&&
+  put_bytes(1,(const uint8_t*)index,(size_t)il,plain,sizeof plain,&pn)&&
+  put_bytes(2,action,an,plain,sizeof plain,&pn)&&put_number(4,6,plain,sizeof plain,&pn)&&
+  mutation_keys(io,key,keys,NULL);
+ uint8_t value[sizeof plain+64],mac_input[sizeof value+73],mac[64],index_mac[32];
+ unsigned mac_len=0;int a=0,b=0;
+ EVP_CIPHER_CTX *aes=EVP_CIPHER_CTX_new();
+ ok=ok&&aes&&RAND_bytes(value,16)==1&&EVP_EncryptInit_ex(aes,EVP_aes_256_cbc(),NULL,keys+32,value)>0&&
+  EVP_EncryptUpdate(aes,value+16,&a,plain,(int)pn)>0&&EVP_EncryptFinal_ex(aes,value+16+a,&b)>0;
+ EVP_CIPHER_CTX_free(aes);
+ wa_tree *tree=NULL;
+ if(ok){
+  size_t vn=16+(size_t)(a+b),input=0;
+  mac_input[input++]=1;memcpy(mac_input+input,key.ptr,key.len);input+=key.len;
+  memcpy(mac_input+input,value,vn);input+=vn;big64(mac_input+input,key.len+1);input+=8;
+  uint8_t hash[128],snapshot_input[160],snapshot_mac[32],patch_input[96],patch_mac[32],stamp[8];
+  size_t name_len=strlen(STATE_COLLECTION);
+  memcpy(hash,h->snapshot_hash,sizeof hash);big64(stamp,h->state_version+1);
+  ok=HMAC(EVP_sha512(),keys+64,32,mac_input,input,mac,&mac_len)&&
+   HMAC(EVP_sha256(),keys,32,(const uint8_t*)index,(size_t)il,index_mac,&mac_len)&&
+   replace_snapshot_value(snapshot,index_mac,hash)&&hash_mac(hash,mac,0);
+  if(ok){
+   memcpy(value+vn,mac,32);vn+=32;
+   memcpy(snapshot_input,hash,128);memcpy(snapshot_input+128,stamp,8);
+   memcpy(snapshot_input+136,STATE_COLLECTION,name_len);
+   ok=HMAC(EVP_sha256(),keys+96,32,snapshot_input,136+name_len,snapshot_mac,&mac_len)!=NULL;
+   if(ok){
+    memcpy(patch_input,snapshot_mac,32);memcpy(patch_input+32,mac,32);memcpy(patch_input+64,stamp,8);
+    memcpy(patch_input+72,STATE_COLLECTION,name_len);
+    ok=HMAC(EVP_sha256(),keys+128,32,patch_input,72+name_len,patch_mac,&mac_len)!=NULL;
+   }
+  }
+  uint8_t ix[40],val[sizeof value+8],record[900],mutation[920],patch[1100];
+  size_t ixn=0,valn=0,recn=0,mun=0,patchn=0;
+  ok=ok&&put_bytes(1,index_mac,32,ix,sizeof ix,&ixn)&&put_bytes(1,value,vn,val,sizeof val,&valn)&&
+   put_bytes(1,ix,ixn,record,sizeof record,&recn)&&put_bytes(2,val,valn,record,sizeof record,&recn)&&
+   put_bytes(3,key_id.ptr,key_id.len,record,sizeof record,&recn)&&put_number(1,0,mutation,sizeof mutation,&mun)&&
+   put_bytes(2,record,recn,mutation,sizeof mutation,&mun)&&put_bytes(2,mutation,mun,patch,sizeof patch,&patchn)&&
+   put_bytes(4,snapshot_mac,32,patch,sizeof patch,&patchn)&&put_bytes(5,patch_mac,32,patch,sizeof patch,&patchn)&&
+   put_bytes(6,key_id.ptr,key_id.len,patch,sizeof patch,&patchn);
+  if(ok){
+   tree=state_query(h->state_version,iq_id,0);
+   wa_node *collection=tree?wa_node_child(wa_node_child(tree->root,"sync"),"collection"):NULL;
+   wa_node *node=collection?wa_node_add(tree,collection,"patch"):NULL;
+   if(node&&patchn<=WA_NODE_BYTES-tree->used){
+    node->data=tree->arena+tree->used;node->data_len=patchn;
+    memcpy(tree->arena+tree->used,patch,patchn);tree->used+=patchn;
+   }else{wa_tree_free(tree);tree=NULL;}
+  }
+ }
+ OPENSSL_cleanse(keys,sizeof keys);OPENSSL_cleanse(plain,sizeof plain);return tree;
 }
 static int inflate_data(const uint8_t *p,size_t n,uint8_t **out,size_t *size){
  z_stream z={0};if(inflateInit(&z)!=Z_OK)return 0;size_t cap=65536;uint8_t *b=malloc(cap);if(!b){inflateEnd(&z);return 0;}z.next_in=(Bytef*)p;z.avail_in=(uInt)n;int r=Z_OK;

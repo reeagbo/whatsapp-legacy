@@ -51,6 +51,8 @@ import java.util.concurrent.TimeUnit
 class MainActivity : Activity() {
     private external fun nativeHistoryRequest(handle: Long, jid: String, anchor: String, own: Boolean, time: Long, id: String): Boolean
     private external fun nativeHistoryTask(handle: Long, slot: Int): ByteArray?
+    private external fun nativeDeleteChat(handle: Long, peer: String, anchor: String, own: Boolean, time: Long, changed: Long): Boolean
+    private external fun nativeDeleteSnapshot(handle: Long, cursor: Long)
     private external fun nativeHistoryDone(handle: Long, slot: Int, task: ByteArray, version: Long): Boolean
     private external fun nativeHistoryPath(task: ByteArray): String?
     private external fun nativeHistoryOpen(session: Long, task: ByteArray, encrypted: ByteArray, missing: Array<String?>): Long
@@ -111,6 +113,9 @@ class MainActivity : Activity() {
     private var sendButton: Button? = null
     private var connected = false
     private var statusText = "Sin conexión"
+    private data class ChatDelete(val peer: String, val id: String, val outgoing: Boolean, val time: Long, val changed: Long)
+    private val queuedDeletes=java.util.ArrayDeque<ChatDelete>()
+    private var deleteInFlight=false
     private var pendingMessage: String? = null
     private val reconnectPolicy = ReconnectPolicy()
     private var sessionGeneration = 0
@@ -320,16 +325,35 @@ class MainActivity : Activity() {
     }
     private fun confirmChatDeletion(jid: String) {
         AlertDialog.Builder(this).setTitle("Eliminar conversación")
-            .setMessage("Se borrarán de Legacy los mensajes guardados de ${title(jid)}. La conversación seguirá en los demás dispositivos.")
+            .setMessage("Se borrará de Legacy la conversación con ${title(jid)} y se solicitará el borrado en tus otros dispositivos.")
             .setNegativeButton("Cancelar",null)
             .setPositiveButton("Eliminar") { _, _ ->
                 try {
+                    val anchor=store.latestRemoteMessage(jid)
                     store.deleteChatLocally(jid)
                     if(historyRequestPeer?.let { store.resolve(it)==store.resolve(jid) }==true)
                         finishHistoryPage(false)
                     refreshConversation()
+                    if(anchor!=null) {
+                        queuedDeletes.addLast(ChatDelete(anchor.peer,anchor.id,anchor.outgoing,anchor.time,System.currentTimeMillis()))
+                        if(connected)sendQueuedDelete() else reportDelete("Borrado local. Envío a WhatsApp pendiente.")
+                    } else reportDelete("Borrado local. No hay mensajes confirmados para solicitar el borrado en WhatsApp.")
                 } catch(error: Exception) { storageFailure(error) }
             }.show()
+    }
+    private fun reportDelete(message: String) {
+        Toast.makeText(this,message,Toast.LENGTH_SHORT).show()
+    }
+    private fun sendQueuedDelete() {
+        val active=connection ?: return
+        if(!connected || deleteInFlight)return
+        while(queuedDeletes.isNotEmpty()) {
+            val request=queuedDeletes.removeFirst()
+            deleteInFlight=active.deleteChat(request)
+            if(deleteInFlight)return
+            debugLog.add("DELETE_SYNC_NOT_STARTED")
+            reportDelete("Borrado local. No se pudo enviar a WhatsApp.")
+        }
     }
     private fun newConversation() {
         val form=column().apply { setPadding(dp(24),dp(8),dp(24),0) }
@@ -488,6 +512,15 @@ class MainActivity : Activity() {
                     debugLog.add("HISTORY_EVENT kind=${e[0]} state=$state")
                     if(state<0)finishHistoryPage(false)
                 }
+                "delete-result" -> {
+                    deleteInFlight=false
+                    debugLog.add("DELETE_SYNC_RESULT state=$state")
+                    reportDelete(when(state) {
+                        1 -> "WhatsApp aceptó el borrado."
+                        -2 -> "Borrado local. WhatsApp no confirmó el borrado."
+                        else -> "Borrado local. No se pudo sincronizar con WhatsApp."
+                    })
+                }
                 "alias-conflict", "alias-storage" -> debugLog.add("CONTACT_MAPPING kind=${e[0]}")
                 "contact" -> if(e[2].isNotBlank()) store.learnName(e[2],e[3])
                 "notice" -> debugLog.add("MESSAGING_NOTICE state=$state detail=${e[3]}")
@@ -498,6 +531,7 @@ class MainActivity : Activity() {
         scheduleContacts()
         scheduleHistory(events.any { it.firstOrNull() in listOf("state-sync","history","ready") })
         requestQueuedHistory()
+        sendQueuedDelete()
         updateSend()
         } catch (error: Exception) { storageFailure(error) }
     }
@@ -602,6 +636,7 @@ class MainActivity : Activity() {
                         val confirmed=active.historyDone(slot,task,nativeHistoryVersion(handle))
                         debugLog.add("HISTORY_CHUNK_COMMITTED chats=$importedChats messages=$importedMessages task_confirmed=$confirmed")
                         if(!confirmed)throw java.io.IOException("History task acknowledgement unavailable")
+                        if(stateTask)active.deleteFromSnapshot(handle)
                     } catch(error: Exception) {
                         if(stateTask)stateFailed=true else errorType=error.javaClass.simpleName
                         debugLog.add("SYNC_CHUNK_FAILED state=$stateTask stage=$stage type=${error.javaClass.simpleName} retained=true")
@@ -638,6 +673,7 @@ class MainActivity : Activity() {
         automaticReconnect=false
         connection?.cancel();connection=null
         connected=false;pendingMessage=null
+        deleteInFlight=false
         render("Sin conexión · No se pudieron guardar los mensajes. Revisa el espacio disponible. Los recibidos pendientes se conservan.","",false)
     }
     private fun showSettings() {
@@ -696,6 +732,10 @@ class MainActivity : Activity() {
             automaticReconnect=false
             sessionGeneration++;reconnectPolicy.reset();connection?.cancel();connection=null
             connected=false;pendingMessage=null
+            if(deleteInFlight) {
+                deleteInFlight=false
+                reportDelete("Borrado local. WhatsApp no confirmó el borrado.")
+            }
             try {
                 queuedHistoryPeer=null
                 finishHistoryPage(false)
@@ -737,6 +777,10 @@ class MainActivity : Activity() {
     private fun start(phone: String, identity: File = activeIdentity()) {
         sessionGeneration++
         connection?.cancel()
+        if(deleteInFlight) {
+            deleteInFlight=false
+            reportDelete("Borrado local. WhatsApp no confirmó el borrado.")
+        }
         finishHistoryPage(false)
         connected=false
         updateSend()
@@ -771,6 +815,19 @@ class MainActivity : Activity() {
         fun requestSyncKey(key: String) = synchronized(lock) {
             if(!finished && handle!=0L && nativeSyncKey(handle,key,UUID.randomUUID().toString().replace("-","").uppercase(Locale.ROOT)))
                 ws?.let { flush(it) }
+        }
+        fun deleteChat(request: ChatDelete): Boolean = synchronized(lock) {
+            if(finished || handle==0L)return@synchronized false
+            val sent=nativeDeleteChat(handle,request.peer,request.id,request.outgoing,request.time,request.changed)
+            if(sent)ws?.let { flush(it) }
+            sent
+        }
+        fun deleteFromSnapshot(cursor: Long) = synchronized(lock) {
+            if(!finished && handle!=0L) {
+                nativeDeleteSnapshot(handle,cursor)
+                ws?.let { flush(it) }
+                events()
+            }
         }
         fun historyDone(slot: Int, task: ByteArray, version: Long): Boolean = synchronized(lock) {
             !finished && handle!=0L && nativeHistoryDone(handle,slot,task,version)
@@ -949,6 +1006,11 @@ class MainActivity : Activity() {
                     } else {
                         connection = null
                         connected=false
+                        if(deleteInFlight) {
+                            deleteInFlight=false
+                            debugLog.add("DELETE_SYNC_DISCONNECTED")
+                            reportDelete("Borrado local. Se perdió la conexión antes de la confirmación.")
+                        }
                         try {
                             pendingMessage=null
                             if(retryNetwork)queuedHistoryPeer=queuedHistoryPeer ?: historyRequestPeer

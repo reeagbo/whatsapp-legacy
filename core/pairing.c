@@ -361,6 +361,12 @@ wa_history *wa_pair_history_open(wa_pair_session *s,const uint8_t *p,size_t n,co
 int wa_pair_history_done(wa_pair_session *s,unsigned slot,const uint8_t *p,size_t n,uint64_t version) {
  return s&&s->messenger&&wa_history_commit(&s->message_storage,slot,p,n,version);
 }
+int wa_pair_delete_chat(wa_pair_session *s,const char *peer,const char *anchor,int own,uint64_t time,uint64_t changed){
+ return s&&wa_messenger_delete_chat(s->messenger,peer,anchor,own,time,changed);
+}
+void wa_pair_delete_snapshot(wa_pair_session *s,const wa_history *snapshot){
+ if(s)wa_messenger_delete_snapshot(s->messenger,snapshot);
+}
 int wa_pair_sync_key(wa_pair_session *s,const char *hex,const char *id){
  return s&&wa_messenger_sync_key(s->messenger,hex,id);
 }

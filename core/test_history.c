@@ -36,6 +36,35 @@ int main(void) {
  assert(wa_history_save(&io,inline_task,sizeof inline_task)&&wa_history_save(&io,inline_task,sizeof inline_task));uint8_t stored[8192];size_t n=0;
  assert(wa_history_task(&io,0,stored,sizeof stored,&n)==1&&n==sizeof inline_task);assert(wa_history_task(&io,1,stored,sizeof stored,&n)==0);
  assert(!wa_history_done(&io,0,media_task,sizeof media_task));assert(wa_history_done(&io,0,inline_task,sizeof inline_task));assert(wa_history_task(&io,0,stored,sizeof stored,&n)==0);
+ /* Encode an outgoing delete from a verified, empty version-one snapshot,
+  * then validate the encrypted mutation through the incoming patch decoder. */
+ uint8_t raw_key[32]={7},key_id[]={10,1,9},version[]={8,1},derived[160],input[160]={0},snapshot_mac[32];
+ unsigned mac_len=0;big64(input+128,1);memcpy(input+136,STATE_COLLECTION,strlen(STATE_COLLECTION));
+ char filename[80];assert(key_file((wa_slice){key_id+2,1},filename));
+ assert(io.put(io.user,filename,raw_key,sizeof raw_key));
+ assert(expand(raw_key,sizeof raw_key,"WhatsApp Mutation Keys",derived,sizeof derived));
+ assert(HMAC(EVP_sha256(),derived+96,32,input,136+strlen(STATE_COLLECTION),snapshot_mac,&mac_len));
+ uint8_t snapshot[128],descriptor[64],stored_version[8];size_t sn=0,dn=0;
+ assert(put_bytes(1,version,sizeof version,snapshot,sizeof snapshot,&sn));
+ assert(put_bytes(3,snapshot_mac,32,snapshot,sizeof snapshot,&sn));
+ assert(put_bytes(4,key_id,sizeof key_id,snapshot,sizeof snapshot,&sn));
+ assert(put_number(101,1,descriptor,sizeof descriptor,&dn));
+ assert(put_bytes(109,(const uint8_t*)"request",7,descriptor,sizeof descriptor,&dn));
+ big64(stored_version,1);assert(io.put(io.user,STATE_VERSION_KEY,stored_version,8));
+ h=calloc(1,sizeof *h);assert(h&&state_open(h,&io,(wa_slice){descriptor,dn},(wa_slice){snapshot,sn},NULL));
+ wa_tree *tree=wa_history_delete_patch(h,&io,"outgoing-test","123456789@lid","last",0,1700000000000ULL,1700000002000ULL);
+ assert(tree);wa_history_free(h);
+ wa_node *collection=wa_node_child(wa_node_child(tree->root,"sync"),"collection");
+ assert(collection&&!strcmp(wa_node_get(collection,"version"),"1"));
+ wa_node *patch_node=wa_node_child(collection,"patch");assert(patch_node&&patch_node->data_len);
+ uint8_t patch_task[1200];size_t ptn=0;
+ assert(put_number(101,2,patch_task,sizeof patch_task,&ptn));
+ assert(put_number(108,2,patch_task,sizeof patch_task,&ptn));
+ assert(put_bytes(103,patch_node->data,patch_node->data_len,patch_task,sizeof patch_task,&ptn));
+ h=wa_history_open_sync(&io,patch_task,ptn,NULL,0,NULL);
+ assert(h&&wa_history_next(h,&e,&time)==1&&!strcmp(e.kind,"delete-chat")&&!strcmp(e.jid,"123456789@lid"));
+ wa_history_free(h);wa_tree_free(tree);
+ assert(wa_state_version(&io)==1&&io.put(io.user,STATE_VERSION_KEY,NULL,0)&&io.put(io.user,filename,NULL,0));
  wa_storage_posix_close(&io);assert(!rmdir(folder));
  /* A remote chat removal carries the last included message in Unix seconds. */
  const uint8_t index[]="[\"deleteChat\",\"123456789@lid\",\"1\"]";
