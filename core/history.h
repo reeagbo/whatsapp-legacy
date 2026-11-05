@@ -24,6 +24,7 @@ int wa_history_done(const wa_storage *,unsigned,const uint8_t *,size_t);
 int wa_history_response(const uint8_t *,size_t);
 int wa_history_path(const uint8_t *,size_t,char *,size_t);
 typedef struct wa_history wa_history;
+void wa_history_write_diagnostic(const uint8_t *,size_t,char *,size_t);
 wa_history *wa_history_open_diagnostic(const wa_storage *,const uint8_t *,size_t,const uint8_t *,size_t,char [129],const char **);
 wa_history *wa_history_open_sync(const wa_storage *,const uint8_t *,size_t,const uint8_t *,size_t,char missing[129]);
 const char *wa_history_delete_request(const wa_history *);

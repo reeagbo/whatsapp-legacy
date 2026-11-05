@@ -453,6 +453,24 @@ static int hash_mac(uint8_t hash[128],const uint8_t value[32],int subtract){
 }
 /* Reconstruct a write base from the server snapshot plus all authenticated
  * deltas returned with it. The receive cursor is never moved by this replay. */
+
+/* Structural metadata only: never serialize values, key IDs or payload bytes. */
+void wa_history_write_diagnostic(const uint8_t *p,size_t n,char *out,size_t cap){
+ reader r={p,n,0};unsigned f,w;uint64_t v;wa_slice patch;int k;size_t count=0;
+ if(cap)out[0]=0;
+ while((k=next(&r,&f,&w,&patch,&v))>0){
+  if(f!=111||w!=2)continue;count++;
+  wa_slice id={0},key={0},sm={0},pm={0},ext={0},ver={0};
+  int format=valid(patch),has_id=bytes(patch,6,&id),has_key=has_id&&bytes(id,1,&key);
+  int has_sm=bytes(patch,4,&sm),has_pm=bytes(patch,5,&pm),has_ext=bytes(patch,3,&ext),has_ver=bytes(patch,1,&ver);
+  if(!format||(has_ext&&ext.len)||!has_key||!has_sm||sm.len!=32||!has_pm||pm.len!=32){
+   snprintf(out,cap,"patch_index=%zu patch_bytes=%zu protobuf=%d key_wrapper=%d key_value=%d key_bytes=%zu snapshot_mac_present=%d snapshot_mac_bytes=%zu patch_mac_present=%d patch_mac_bytes=%zu external_present=%d external_bytes=%zu version_present=%d",
+    count,patch.len,format,has_id,has_key,key.len,has_sm,sm.len,has_pm,pm.len,has_ext,ext.len,has_ver);return;
+  }
+ }
+ snprintf(out,cap,"patches=%zu structure=%s",count,k<0?"invalid-task":"valid");
+}
+
 static int replay_write_snapshot(wa_history *h,const wa_storage *io,wa_slice task,char missing[129],const char **stage){
  h->write_more=number(task,112)!=0;
  wa_slice *records=calloc(STATE_EVENTS_MAX,sizeof *records);if(!records){*stage="write-memory";return 0;}
@@ -467,12 +485,15 @@ static int replay_write_snapshot(wa_history *h,const wa_storage *io,wa_slice tas
  reader patches={task.ptr,task.len,0};wa_slice patch;
  while((k=next(&patches,&f,&w,&patch,&value))>0){
   if(f!=111||w!=2)continue;
-  *stage="write-patch-format";
   wa_slice patch_key,key,snapshot_mac,expected,external;
-  if(!valid(patch)||(bytes(patch,3,&external)&&external.len)
-    ||!bytes(patch,6,&patch_key)||!bytes(patch_key,1,&key)
-    ||!bytes(patch,4,&snapshot_mac)||snapshot_mac.len!=32
-    ||!bytes(patch,5,&expected)||expected.len!=32)goto done;
+  *stage="write-patch-protobuf";if(!valid(patch))goto done;
+  *stage="write-external-mutations";if(bytes(patch,3,&external)&&external.len)goto done;
+  *stage="write-keyid-wrapper";if(!bytes(patch,6,&patch_key))goto done;
+  *stage="write-keyid-value";if(!bytes(patch_key,1,&key))goto done;
+  *stage="write-snapshot-mac-missing";if(!bytes(patch,4,&snapshot_mac))goto done;
+  *stage="write-snapshot-mac-size";if(snapshot_mac.len!=32)goto done;
+  *stage="write-patch-mac-missing";if(!bytes(patch,5,&expected))goto done;
+  *stage="write-patch-mac-size";if(expected.len!=32)goto done;
   uint64_t version=bytes(patch,1,&version_blob)?number(version_blob,1):h->state_version+1;
   if(version!=h->state_version+1){*stage="write-version-gap";goto done;}
   uint8_t keys[160],actual[32],stamp[8];unsigned mn=0;big64(stamp,version);

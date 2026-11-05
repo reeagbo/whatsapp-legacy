@@ -20,6 +20,25 @@ static void overwrite_query_stack(void) {
 }
 static void (*volatile reuse_query_stack)(void)=overwrite_query_stack;
 int main(void) {
+ /* A real unsupported shape must identify its exact field without exposing
+  * key IDs or record bytes in the diagnostic. */
+ {
+  const uint8_t secret[]="DO_NOT_LOG";
+  uint8_t id[64],patch[256],task[300],zero[32]={0};size_t idn=0,pn=0,tn=0;
+  assert(put_bytes(1,secret,sizeof secret-1,id,sizeof id,&idn));
+  assert(put_bytes(6,id,idn,patch,sizeof patch,&pn));
+  assert(put_bytes(4,zero,32,patch,sizeof patch,&pn));
+  assert(put_bytes(5,zero,32,patch,sizeof patch,&pn));
+  assert(put_bytes(3,zero,1,patch,sizeof patch,&pn));
+  assert(put_bytes(111,patch,pn,task,sizeof task,&tn));
+  char detail[512];wa_history_write_diagnostic(task,tn,detail,sizeof detail);
+  assert(strstr(detail,"patch_index=1")&&strstr(detail,"external_bytes=1"));
+  assert(strstr(detail,"key_bytes=10")&&!strstr(detail,"DO_NOT_LOG"));
+  tn=0;assert(put_bytes(111,NULL,0,task,sizeof task,&tn));
+  wa_history_write_diagnostic(task,tn,detail,sizeof detail);
+  assert(strstr(detail,"key_wrapper=0")&&strstr(detail,"patch_mac_present=0"));
+ }
+
  /* App-state queries go to the bare server domain (token), not an empty-user
   * JID. Other IQ services accepting that JID does not establish sync routing. */
  wa_tree *query=wa_state_query(NULL,"routing-test",0,1);assert(query);

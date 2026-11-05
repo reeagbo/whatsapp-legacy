@@ -399,6 +399,8 @@ wa_history *wa_pair_history_open(wa_pair_session *s,const uint8_t *p,size_t n,co
  }
  if(!h&&wa_history_job_kind(p,n)){
   uint64_t low=0;wa_pb_varint_field(p,n,110,&low);
+  char detail[512];wa_history_write_diagnostic(p,n,detail,sizeof detail);
+  trace(s,"APP_STATE_DECODE_STRUCTURE %s",detail);
   trace(s,"APP_STATE_DECODE_FAILED stage=%s key_missing=%d kind=%d collection=%s task_version=%llu stored_version=%llu task_bytes=%zu external_bytes=%zu",
    stage,missing&&missing[0]!=0,wa_history_job_kind(p,n),low?"regular_low":"regular_high",
    (unsigned long long)wa_history_job_order(p,n),
