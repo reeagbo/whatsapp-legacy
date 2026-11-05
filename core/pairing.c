@@ -377,6 +377,12 @@ wa_history *wa_pair_history_open(wa_pair_session *s,const uint8_t *p,size_t n,co
  if(!s||!s->messenger)return NULL;
  const char *stage;
  wa_history *h=wa_history_open_diagnostic(&s->message_storage,p,n,enc,en,missing,&stage);
+ if(h&&wa_history_delete_request(h)[0]){
+  uint64_t low=0;wa_pb_varint_field(p,n,110,&low);
+  trace(s,"APP_STATE_WRITE_BASE version=%llu received_version=%llu collection=%s",
+   (unsigned long long)wa_history_version(h),
+   (unsigned long long)wa_state_version(&s->message_storage,low!=0),low?"regular_low":"regular_high");
+ }
  if(!h&&wa_history_job_kind(p,n)){
   uint64_t low=0;wa_pb_varint_field(p,n,110,&low);
   trace(s,"APP_STATE_DECODE_FAILED stage=%s key_missing=%d kind=%d collection=%s task_version=%llu stored_version=%llu task_bytes=%zu external_bytes=%zu",

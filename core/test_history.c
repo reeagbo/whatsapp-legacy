@@ -118,7 +118,66 @@ int main(void) {
  assert(put_bytes(103,patch_node->data,patch_node->data_len,patch_task,sizeof patch_task,&ptn));
  h=wa_history_open_sync(&io,patch_task,ptn,NULL,0,NULL);
  assert(h&&wa_history_next(h,&e,&time)==1&&!strcmp(e.kind,"delete-chat")&&!strcmp(e.jid,"123456789@lid"));
- wa_history_free(h);wa_tree_free(tree);
+ wa_history_free(h);
+ /* The server returns an old snapshot plus newer deltas for an outgoing
+  * operation. Reconstruct version two before generating another write. */
+ uint8_t server_patch[1400],delta_version[]={8,2};size_t server_n=0;
+ assert(put_bytes(1,delta_version,sizeof delta_version,server_patch,sizeof server_patch,&server_n));
+ memcpy(server_patch+server_n,patch_node->data,patch_node->data_len);server_n+=patch_node->data_len;
+ uint8_t write_task[1700];size_t write_n=0;
+ memcpy(write_task,descriptor,dn);write_n=dn;
+ assert(put_bytes(111,server_patch,server_n,write_task,sizeof write_task,&write_n));
+ big64(stored_version,2);assert(io.put(io.user,STATE_VERSION_KEY,stored_version,8));
+ h=calloc(1,sizeof *h);assert(h);
+ assert(state_open_checked(h,&io,(wa_slice){write_task,write_n},(wa_slice){snapshot,sn},NULL,&stage));
+ assert(h->state_version==1);
+ assert(!wa_history_delete_patch(h,&io,"stale","123456789@lid","last",0,1700000000000ULL,1700000003000ULL,0));
+ assert(replay_write_snapshot(h,&io,(wa_slice){write_task,write_n},NULL,&stage));
+ assert(h->state_version==2&&h->action_count==0);
+ wa_tree *next_write=wa_history_delete_patch(h,&io,"fresh","123456789@lid","last",0,1700000000000ULL,1700000003000ULL,0);
+ assert(next_write);wa_tree_free(next_write);wa_history_free(h);
+ /* Replay acknowledgements must not skip unapplied incoming changes. */
+ assert(wa_history_save(&io,write_task,write_n));
+ assert(wa_history_commit(&io,0,write_task,write_n,3));assert(wa_state_version(&io,0)==2);
+ h=calloc(1,sizeof *h);assert(h);
+ assert(state_open_checked(h,&io,(wa_slice){write_task,write_n},(wa_slice){snapshot,sn},NULL,&stage));
+ write_task[write_n-8]^=1;
+ assert(!replay_write_snapshot(h,&io,(wa_slice){write_task,write_n},NULL,&stage));wa_history_free(h);
+ big64(stored_version,1);assert(io.put(io.user,STATE_VERSION_KEY,stored_version,8));
+ wa_tree_free(tree);
+ /* Exercise the same reconstruction for regular_low: archive, then generate
+  * and decrypt the next unarchive mutation from the reconstructed base. */
+ {
+  uint8_t low_snapshot[128],low_descriptor[128],low_input[160]={0},low_mac[32];size_t ln=0,ldn=0;
+  big64(low_input+128,1);memcpy(low_input+136,"regular_low",11);
+  assert(HMAC(EVP_sha256(),derived+96,32,low_input,147,low_mac,&mac_len));
+  assert(put_bytes(1,version,sizeof version,low_snapshot,sizeof low_snapshot,&ln));
+  assert(put_bytes(3,low_mac,32,low_snapshot,sizeof low_snapshot,&ln));
+  assert(put_bytes(4,key_id,sizeof key_id,low_snapshot,sizeof low_snapshot,&ln));
+  memcpy(low_descriptor,descriptor,dn);ldn=dn;
+  assert(put_number(110,1,low_descriptor,sizeof low_descriptor,&ldn));
+  h=calloc(1,sizeof *h);assert(h&&state_open_checked(h,&io,(wa_slice){low_descriptor,ldn},(wa_slice){low_snapshot,ln},NULL,&stage));
+  wa_tree *archive=wa_history_delete_patch(h,&io,"archive","123456789@lid","last",0,1700000000000ULL,1700000003000ULL,1);
+  assert(archive);wa_history_free(h);
+  wa_node *ap=wa_node_child(wa_node_child(wa_node_child(archive->root,"sync"),"collection"),"patch");assert(ap);
+  server_n=0;assert(put_bytes(1,delta_version,sizeof delta_version,server_patch,sizeof server_patch,&server_n));
+  memcpy(server_patch+server_n,ap->data,ap->data_len);server_n+=ap->data_len;
+  memcpy(write_task,low_descriptor,ldn);write_n=ldn;
+  assert(put_bytes(111,server_patch,server_n,write_task,sizeof write_task,&write_n));
+  big64(stored_version,2);assert(io.put(io.user,version_key(1),stored_version,8));
+  h=calloc(1,sizeof *h);assert(h&&state_open_checked(h,&io,(wa_slice){write_task,write_n},(wa_slice){low_snapshot,ln},NULL,&stage));
+  assert(replay_write_snapshot(h,&io,(wa_slice){write_task,write_n},NULL,&stage)&&h->state_version==2);
+  wa_tree *unarchive=wa_history_delete_patch(h,&io,"unarchive","123456789@lid","last",0,1700000000000ULL,1700000004000ULL,0);
+  assert(unarchive);wa_history_free(h);
+  ap=wa_node_child(wa_node_child(wa_node_child(unarchive->root,"sync"),"collection"),"patch");assert(ap);
+  ptn=0;assert(put_number(101,2,patch_task,sizeof patch_task,&ptn));
+  assert(put_number(110,1,patch_task,sizeof patch_task,&ptn));assert(put_number(108,3,patch_task,sizeof patch_task,&ptn));
+  assert(put_bytes(103,ap->data,ap->data_len,patch_task,sizeof patch_task,&ptn));
+  h=wa_history_open_sync(&io,patch_task,ptn,NULL,0,NULL);
+  assert(h&&wa_history_next(h,&e,&time)==1&&!strcmp(e.kind,"archive")&&e.state==0);
+  wa_history_free(h);wa_tree_free(archive);wa_tree_free(unarchive);
+  assert(io.put(io.user,version_key(1),NULL,0));
+ }
  assert(wa_state_version(&io,0)==1&&io.put(io.user,STATE_VERSION_KEY,NULL,0)&&io.put(io.user,filename,NULL,0));
  /* A full delta queue must still be able to store a recovery snapshot. */
  for(unsigned slot=0;slot<WA_HISTORY_PATCH_TASKS;slot++){

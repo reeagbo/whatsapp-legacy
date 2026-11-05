@@ -150,6 +150,19 @@ static int state_task(const wa_storage *io,const wa_node *node,int snapshot,uint
  }else if(ok)ok=wa_history_save(io,task,n);
  OPENSSL_cleanse(task,cap);free(task);return ok;
 }
+static int write_state_task(const wa_storage *io,const wa_node *snapshot,const wa_node *collection,const char *request,int low,int more){
+ uint8_t *task=malloc(WA_HISTORY_NOTIFICATION_MAX);if(!task)return 0;size_t n=0;
+ int ok=put_number(101,1,task,WA_HISTORY_NOTIFICATION_MAX,&n)
+  &&put_number(110,low!=0,task,WA_HISTORY_NOTIFICATION_MAX,&n)
+  &&put_number(112,more!=0,task,WA_HISTORY_NOTIFICATION_MAX,&n)
+  &&put_bytes(109,(const uint8_t*)request,strlen(request),task,WA_HISTORY_NOTIFICATION_MAX,&n)
+  &&blob_ref((wa_slice){snapshot->data,snapshot->data_len},task,WA_HISTORY_NOTIFICATION_MAX,&n);
+ const wa_node *patches=wa_node_child(collection,"patches");
+ for(const wa_node *p=patches?patches->child:collection->child;p&&ok;p=p->next)
+  if(!strcmp(p->tag,"patch"))ok=put_bytes(111,p->data,p->data_len,task,WA_HISTORY_NOTIFICATION_MAX,&n);
+ if(ok){char name[32];key(WA_HISTORY_PATCH_TASKS+(unsigned)low,name);ok=io->put(io->user,name,task,n);}
+ OPENSSL_cleanse(task,WA_HISTORY_NOTIFICATION_MAX);free(task);return ok;
+}
 int wa_state_collect(const wa_storage *io,const wa_node *result,const char *request,int low) {
  int more=0,found=0;
  wa_node *sync=wa_node_child(result,"sync");
@@ -162,6 +175,7 @@ int wa_state_collect(const wa_storage *io,const wa_node *result,const char *requ
   const char *version=wa_node_get(collection,"version");
   uint64_t fallback=version?strtoull(version,NULL,10):0;
   wa_node *snapshot=wa_node_child(collection,"snapshot");
+  if(request&&snapshot)return write_state_task(io,snapshot,collection,request,low,more)?1:0;
   if(snapshot&&!state_task(io,snapshot,1,0,request,low))return 0;
   wa_node *patches=wa_node_child(collection,"patches");
   unsigned queued=0;
@@ -427,6 +441,87 @@ static int hash_mac(uint8_t hash[128],const uint8_t value[32],int subtract){
  }
  return 1;
 }
+/* Reconstruct a write base from the server snapshot plus all authenticated
+ * deltas returned with it. The receive cursor is never moved by this replay. */
+static int replay_write_snapshot(wa_history *h,const wa_storage *io,wa_slice task,char missing[129],const char **stage){
+ if(number(task,112)){*stage="write-page-incomplete";return 0;}
+ wa_slice *records=calloc(STATE_EVENTS_MAX,sizeof *records);if(!records){*stage="write-memory";return 0;}
+ wa_slice snapshot={h->plain,h->size},keyid,version_blob;
+ size_t count=0;reader initial={snapshot.ptr,snapshot.len,0};unsigned f,w;uint64_t value;wa_slice record;int k,ok=0;
+ if(!bytes(snapshot,4,&keyid))goto done;
+ while((k=next(&initial,&f,&w,&record,&value))>0)if(f==2&&w==2){
+  if(count==STATE_EVENTS_MAX)goto done;records[count++]=record;
+ }
+ if(k<0)goto done;
+ uint8_t hash[128];memcpy(hash,h->snapshot_hash,sizeof hash);
+ reader patches={task.ptr,task.len,0};wa_slice patch;
+ while((k=next(&patches,&f,&w,&patch,&value))>0){
+  if(f!=111||w!=2)continue;
+  *stage="write-patch-format";
+  wa_slice patch_key,key,snapshot_mac,expected,external;
+  if(!valid(patch)||bytes(patch,3,&external)||!bytes(patch,1,&version_blob)
+    ||!bytes(patch,6,&patch_key)||!bytes(patch_key,1,&key)
+    ||!bytes(patch,4,&snapshot_mac)||snapshot_mac.len!=32
+    ||!bytes(patch,5,&expected)||expected.len!=32)goto done;
+  uint64_t version=number(version_blob,1);
+  if(version!=h->state_version+1){*stage="write-version-gap";goto done;}
+  uint8_t keys[160],actual[32],stamp[8];unsigned mn=0;big64(stamp,version);
+  *stage="write-patch-key";
+  if(!mutation_keys(io,key,keys,missing))goto done;
+  HMAC_CTX *hm=HMAC_CTX_new();wa_history *checked=calloc(1,sizeof *checked);
+  int verified=hm&&checked&&HMAC_Init_ex(hm,keys+128,32,EVP_sha256(),NULL)
+   &&HMAC_Update(hm,snapshot_mac.ptr,32)
+   &&state_records(checked,io,patch,2,0,hm,NULL,missing,stage)
+   &&HMAC_Update(hm,stamp,8)
+   &&HMAC_Update(hm,(const uint8_t*)collection_name(h->low),strlen(collection_name(h->low)))
+   &&HMAC_Final(hm,actual,&mn)&&!CRYPTO_memcmp(actual,expected.ptr,32);
+  HMAC_CTX_free(hm);wa_history_free(checked);
+  if(!verified){OPENSSL_cleanse(keys,sizeof keys);goto done;}
+  reader mutations={patch.ptr,patch.len,0};wa_slice mutation;
+  *stage="write-map";
+  while((k=next(&mutations,&f,&w,&mutation,&value))>0){
+   if(f!=2||w!=2)continue;
+   wa_slice incoming,index,old_index;
+   unsigned op=(unsigned)number(mutation,1);
+   if(!bytes(mutation,2,&incoming)||!bytes(incoming,1,&index)||!bytes(index,1,&index))break;
+   size_t pos=0;
+   for(;pos<count;pos++)if(bytes(records[pos],1,&old_index)&&bytes(old_index,1,&old_index)
+     &&old_index.len==index.len&&!CRYPTO_memcmp(old_index.ptr,index.ptr,index.len))break;
+   if(op){if(pos<count)records[pos]=records[--count];}
+   else if(pos<count)records[pos]=incoming;
+   else if(count<STATE_EVENTS_MAX)records[count++]=incoming;
+   else break;
+  }
+  if(k!=0){OPENSSL_cleanse(keys,sizeof keys);goto done;}
+  memset(hash,0,sizeof hash);
+  for(size_t i=0;i<count;i++){
+   wa_slice encrypted;
+   if(!bytes(records[i],2,&encrypted)||!bytes(encrypted,1,&encrypted)||encrypted.len<32
+     ||!hash_mac(hash,encrypted.ptr+encrypted.len-32,0)){k=-1;break;}
+  }
+  *stage="write-snapshot-mac";
+  hm=HMAC_CTX_new();verified=k==0&&hm&&HMAC_Init_ex(hm,keys+96,32,EVP_sha256(),NULL)
+   &&HMAC_Update(hm,hash,sizeof hash)&&HMAC_Update(hm,stamp,8)
+   &&HMAC_Update(hm,(const uint8_t*)collection_name(h->low),strlen(collection_name(h->low)))
+   &&HMAC_Final(hm,actual,&mn)&&!CRYPTO_memcmp(actual,snapshot_mac.ptr,32);
+  HMAC_CTX_free(hm);OPENSSL_cleanse(keys,sizeof keys);if(!verified)goto done;
+  h->state_version=version;keyid=patch_key;
+ }
+ if(k<0)goto done;
+ /* Materialize the reconstructed record map for replacement-MAC calculation. */
+ size_t capacity=256;
+ for(size_t i=0;i<count;i++){if(capacity>WA_HISTORY_PLAIN_MAX-16||records[i].len>WA_HISTORY_PLAIN_MAX-capacity-16)goto done;capacity+=records[i].len+16;}
+ uint8_t *plain=malloc(capacity),version[16];size_t n=0,vn=0;
+ if(!plain)goto done;
+ int built=put_number(1,h->state_version,version,sizeof version,&vn)
+  &&put_bytes(1,version,vn,plain,capacity,&n);
+ for(size_t i=0;i<count&&built;i++)built=put_bytes(2,records[i].ptr,records[i].len,plain,capacity,&n);
+ built=built&&put_bytes(4,keyid.ptr,keyid.len,plain,capacity,&n);
+ if(!built){free(plain);goto done;}
+ OPENSSL_cleanse(h->plain,h->size);free(h->plain);h->plain=plain;h->size=n;
+ memcpy(h->snapshot_hash,hash,sizeof hash);h->action_count=0;ok=1;
+ done:free(records);return ok;
+}
 static int replace_snapshot_value(wa_slice snapshot,const uint8_t index_mac[32],uint8_t hash[128]){
  reader r={snapshot.ptr,snapshot.len,0};unsigned f,w;uint64_t v;wa_slice record,index,value;int k;
  while((k=next(&r,&f,&w,&record,&v))>0){
@@ -440,7 +535,7 @@ static int replace_snapshot_value(wa_slice snapshot,const uint8_t index_mac[32],
 wa_tree *wa_history_delete_patch(const wa_history *h,const wa_storage *io,const char *iq_id,
  const char *peer,const char *anchor,int own,uint64_t time,uint64_t changed,int archive){
  if(!h||!h->delete_request[0]||!address(peer)||!anchor||!*anchor||strlen(anchor)>=96||
-    !time||!changed||h->state_version!=wa_state_version(io,h->low)||h->state_version>=UINT32_MAX)return NULL;
+    !time||!changed||h->state_version<wa_state_version(io,h->low)||h->state_version>=UINT32_MAX)return NULL;
  wa_slice snapshot={h->plain,h->size},key_id,key;
  if(!bytes(snapshot,4,&key_id)||!bytes(key_id,1,&key))return NULL;
  const char *collection_name_value=collection_name(h->low);
@@ -545,6 +640,7 @@ wa_history *wa_history_open_diagnostic(const wa_storage *io,const uint8_t *notif
  wa_history *h=calloc(1,sizeof *h);
  if(!kind)*stage="history-zlib";
  int ok=h&&(kind?state_open_checked(h,io,s,(wa_slice){compressed,cn},missing,stage):inflate_data(compressed,cn,&h->plain,&h->size));
+ if(ok&&h->delete_request[0])ok=replay_write_snapshot(h,io,s,missing,stage);
  if(allocated){OPENSSL_cleanse(compressed,en);free(compressed);}
  if(!ok||(!kind&&!valid((wa_slice){h->plain,h->size}))){wa_history_free(h);return NULL;}
  h->root=(reader){h->plain,h->size,0};return h;
@@ -565,7 +661,11 @@ uint64_t wa_history_job_order(const uint8_t *p,size_t n){
 }
 int wa_history_commit(const wa_storage *io,unsigned slot,const uint8_t *p,size_t n,uint64_t version){
  int kind=wa_history_job_kind(p,n),low=number((wa_slice){p,n},110)==1;
- if((kind==1||kind==2)&&version>wa_state_version(io,low)){
+ wa_slice write_request;
+ int write_base=bytes((wa_slice){p,n},109,&write_request);
+ /* A write-base replay authenticates metadata, but does not import actions
+  * into the database. Only normal incoming sync may advance its cursor. */
+ if(!write_base&&(kind==1||kind==2)&&version>wa_state_version(io,low)){
   uint8_t *stored=malloc(n);if(!stored)return 0;
   size_t size=0;int matches=wa_history_task(io,slot,stored,n,&size)==1&&size==n&&!CRYPTO_memcmp(p,stored,n);
   OPENSSL_cleanse(stored,n);free(stored);if(!matches)return 0;

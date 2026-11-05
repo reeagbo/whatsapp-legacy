@@ -393,6 +393,7 @@ void wa_messenger_delete_snapshot(wa_messenger *m,const struct wa_history *h){
  m->delete_snapshot[0]=0;
  wa_tree *patch=wa_history_delete_patch(h,&m->io,m->delete_id,m->delete_peer,m->delete_anchor,
     m->delete_own,m->delete_time,m->delete_changed,m->chat_change==1);
+ if(!patch){delete_result(m,-7);return;}
  if(!send(m,patch))delete_result(m,-1);
 }
 int wa_messenger_node(wa_messenger *m,const wa_node *node){
