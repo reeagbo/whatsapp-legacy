@@ -74,14 +74,14 @@ static const char *safe_tag(const char *tag) {
     "link_code_pairing_wrapped_companion_ephemeral_pub", "companion_server_auth_key_pub",
     "companion_platform_id", "companion_platform_display", "link_code_pairing_nonce",
     "primary_identity_pub", "link_code_pairing_wrapped_primary_ephemeral_pub", "edge_routing",
-    "routing_info", "xmlstreamend", "message", "receipt", "enc", "participants", "to", "usync", "list", "count", "registration", "key", "active"};
+    "routing_info", "xmlstreamend", "message", "receipt", "enc", "participants", "to", "usync", "list", "count", "registration", "key", "active", "sync", "collection", "patches", "patch", "snapshot"};
   if (tag) for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
     if (!strcmp(tag, names[i])) return names[i];
   return "<other>";
 }
 static const char *safe_type(const char *type) {
   if (!type) return "-";
-  const char *const types[] = {"get", "set", "result", "error", "link_code_companion_reg", "text", "pkmsg", "msg", "read", "delivery", "retry"};
+  const char *const types[] = {"get", "set", "result", "error", "link_code_companion_reg", "text", "pkmsg", "msg", "read", "delivery", "retry", "server_sync"};
   for (size_t i=0;i<sizeof types/sizeof types[0];i++) if(!strcmp(type,types[i]))return types[i];
   return "<other>";
 }
@@ -121,6 +121,21 @@ static void trace_node(wa_pair_session *s, const char *direction, const wa_node 
   const char *code = wa_node_get(n,"code"); if(!code)code=wa_node_get(n,"reason"); if(!code)code=wa_node_get(n,"error");
   trace(s,"%s NODE tag=%s type=%s code=%s attrs=%zu data_bytes=%zu",direction,
         safe_tag(n->tag),safe_type(wa_node_get(n,"type")),safe_code(code),n->attr_count,n->data_len);
+  /* Whitelisted protocol metadata identifies incoming archive notifications
+   * and query routing without logging contacts, IDs, payloads or secrets. */
+  if(!strcmp(n->tag,"iq")&&!strcmp(kind,"app-state-read"))
+   trace(s,"%s APP_STATE_ROUTE server=%s",direction,
+    wa_node_get(n,"to")&&!strcmp(wa_node_get(n,"to"),"s.whatsapp.net")?"canonical":"other");
+  const wa_node *sync=wa_node_child(n,"sync");
+  for(const wa_node *c=sync?sync->child:n->child;c;c=c->next){
+   if(strcmp(c->tag,"collection"))continue;
+   const char *name=wa_node_get(c,"name"),*version=wa_node_get(c,"version");
+   const char *safe_name=name&&!strcmp(name,"regular_low")?"regular_low":
+    name&&!strcmp(name,"regular_high")?"regular_high":"other";
+   int numeric=version&&*version&&strlen(version)<=20&&strspn(version,"0123456789")==strlen(version);
+   trace(s,"%s APP_STATE_COLLECTION name=%s version=%s snapshot=%d patches=%d",direction,safe_name,
+    numeric?version:"absent",wa_node_child(c,"snapshot")!=NULL,wa_node_child(c,"patches")!=NULL);
+  }
   unsigned count=0;
   for(const wa_node *child=n->child;child&&count<16;child=child->next,count++)
     trace(s,"%s CHILD tag=%s code=%s data_bytes=%zu",direction,safe_tag(child->tag),

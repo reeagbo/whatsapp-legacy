@@ -14,6 +14,18 @@ static void check_path(const char *path,int expected) {
  assert(wa_history_path(task,n,out,sizeof out)==expected);
 }
 int main(void) {
+ /* App-state queries go to the bare server domain (token), not an empty-user
+  * JID. Other IQ services accepting that JID does not establish sync routing. */
+ wa_tree *query=wa_state_query(NULL,"routing-test",0,1);assert(query);
+ assert(!strcmp(wa_node_get(query->root,"to"),"s.whatsapp.net"));
+ uint8_t query_wire[1024];size_t query_size=0;
+ assert(wa_node_encode(query->root,query_wire,sizeof query_wire,&query_size));
+ wa_tree *decoded_query=wa_node_decode(query_wire,query_size);assert(decoded_query);
+ assert(!strcmp(wa_node_get(decoded_query->root,"to"),"s.whatsapp.net"));
+ wa_node *query_collection=wa_node_child(wa_node_child(decoded_query->root,"sync"),"collection");
+ assert(query_collection&&!strcmp(wa_node_get(query_collection,"name"),"regular_low"));
+ wa_tree_free(decoded_query);wa_tree_free(query);
+
  check_path("/v/t62.71111-24/synthetic.enc?token=test",1);
  check_path("/mms/md-app-state/synthetic",1);
  check_path("//different-host.invalid/path",0);
