@@ -13,10 +13,19 @@ static void check_path(const char *path,int expected) {
  assert(wa_pb_write_bytes(5,(const uint8_t*)path,strlen(path),task,sizeof task,&n));
  assert(wa_history_path(task,n,out,sizeof out)==expected);
 }
+/* Force caller stack reuse between constructing and serializing a query. */
+static void overwrite_query_stack(void) {
+ volatile uint8_t scratch[8192];
+ for(size_t i=0;i<sizeof scratch;i++)scratch[i]=0xa5;
+}
+static void (*volatile reuse_query_stack)(void)=overwrite_query_stack;
 int main(void) {
  /* App-state queries go to the bare server domain (token), not an empty-user
   * JID. Other IQ services accepting that JID does not establish sync routing. */
  wa_tree *query=wa_state_query(NULL,"routing-test",0,1);assert(query);
+ reuse_query_stack();
+ wa_node *before_collection=wa_node_child(wa_node_child(query->root,"sync"),"collection");
+ assert(before_collection&&!strcmp(wa_node_get(before_collection,"version"),"0"));
  assert(!strcmp(wa_node_get(query->root,"to"),"s.whatsapp.net"));
  uint8_t query_wire[1024];size_t query_size=0;
  assert(wa_node_encode(query->root,query_wire,sizeof query_wire,&query_size));
@@ -24,6 +33,7 @@ int main(void) {
  assert(!strcmp(wa_node_get(decoded_query->root,"to"),"s.whatsapp.net"));
  wa_node *query_collection=wa_node_child(wa_node_child(decoded_query->root,"sync"),"collection");
  assert(query_collection&&!strcmp(wa_node_get(query_collection,"name"),"regular_low"));
+ assert(!strcmp(wa_node_get(query_collection,"version"),"0"));
  wa_tree_free(decoded_query);wa_tree_free(query);
 
  check_path("/v/t62.71111-24/synthetic.enc?token=test",1);

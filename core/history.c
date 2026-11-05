@@ -173,7 +173,13 @@ static wa_tree *state_query(uint64_t v,const char *id,int snapshot,int low) {
  wa_tree *t=wa_tree_create();if(!t)return NULL;
  wa_node *root=wa_node_add(t,NULL,"iq"),*sync=root?wa_node_add(t,root,"sync"):NULL;
  wa_node *collection=sync?wa_node_add(t,sync,"collection"):NULL;
- char version[32];snprintf(version,sizeof version,"%llu",(unsigned long long)v);
+ /* Nodes borrow attribute strings; the returned tree must own this number.
+  * A stack buffer here expires before the adapter serializes the query. */
+ char *version=(char*)t->arena+t->used;
+ size_t available=WA_NODE_BYTES-t->used;
+ int length=snprintf(version,available,"%llu",(unsigned long long)v);
+ if(length<0||(size_t)length>=available){wa_tree_free(t);return NULL;}
+ t->used+=(size_t)length+1;
  int ok=collection&&wa_node_attr(root,"to","s.whatsapp.net")&&wa_node_attr(root,"id",id)
   &&wa_node_attr(root,"type","set")&&wa_node_attr(root,"xmlns","w:sync:app:state")
   &&wa_node_attr(collection,"name",collection_name(low))&&wa_node_attr(collection,"version",version)
