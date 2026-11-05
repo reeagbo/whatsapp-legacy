@@ -293,9 +293,17 @@ static int verify_record(wa_history *h,const wa_storage *io,wa_slice record,unsi
   &&EVP_DecryptFinal_ex(aes,plain+a,&b)>0;
  EVP_CIPHER_CTX_free(aes);
  if(ok){
-  *stage="record-action-format";
-  wa_slice data={plain,(size_t)(a+b)},idx,action;
-  ok=valid(data)&&bytes(data,1,&idx)&&bytes(data,2,&action)&&valid(action);
+  *stage="record-data-format";
+  wa_slice data={plain,(size_t)(a+b)},idx,action={0};
+  ok=valid(data);
+  if(ok){*stage="record-index-missing";ok=bytes(data,1,&idx);}
+  /* SyncActionData.value is optional on REMOVE tombstones. Authenticate the
+   * index as usual, but never turn a metadata removal into a chat deletion. */
+  if(ok){
+   int present=bytes(data,2,&action);
+   *stage=present?"record-action-format":"record-action-missing";
+   ok=present?valid(action):op==1;
+  }
   if(ok){
    *stage="record-index-mac";
    ok=HMAC(EVP_sha256(),keys,32,idx.ptr,idx.len,mac,&mn)&&!CRYPTO_memcmp(mac,index.ptr,32);

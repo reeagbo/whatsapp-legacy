@@ -363,7 +363,11 @@ wa_history *wa_pair_history_open(wa_pair_session *s,const uint8_t *p,size_t n,co
  const char *stage;
  wa_history *h=wa_history_open_diagnostic(&s->message_storage,p,n,enc,en,missing,&stage);
  if(!h&&wa_history_job_kind(p,n)){
-  trace(s,"APP_STATE_DECODE_FAILED stage=%s key_missing=%d",stage,missing&&missing[0]!=0);
+  uint64_t low=0;wa_pb_varint_field(p,n,110,&low);
+  trace(s,"APP_STATE_DECODE_FAILED stage=%s key_missing=%d kind=%d collection=%s task_version=%llu stored_version=%llu task_bytes=%zu external_bytes=%zu",
+   stage,missing&&missing[0]!=0,wa_history_job_kind(p,n),low?"regular_low":"regular_high",
+   (unsigned long long)wa_history_job_order(p,n),
+   (unsigned long long)wa_state_version(&s->message_storage,low!=0),n,en);
   if(!strcmp(stage,"version-gap-low"))wa_messenger_recover_state(s->messenger,1);
   else if(!strcmp(stage,"version-gap-high"))wa_messenger_recover_state(s->messenger,0);
  }

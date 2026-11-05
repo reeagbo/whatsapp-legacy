@@ -2,6 +2,7 @@
 /* Cryptographic fixtures generated independently with Python cryptography. */
 #include "history.c"
 #include "storage_posix.h"
+#include "test_state_tombstones.h"
 #include <assert.h>
 #include <unistd.h>
 static const uint8_t inline_task[]={90,130,1,120,156,19,234,102,228,226,53,52,50,54,49,53,51,183,176,116,200,201,76,217,197,36,101,108,130,16,41,214,43,207,72,44,41,78,44,40,208,203,75,45,217,196,196,239,151,159,155,84,148,170,144,95,148,153,158,153,151,152,35,228,205,229,201,37,139,102,134,0,163,20,151,135,103,112,136,127,80,164,174,167,139,144,2,151,156,111,106,94,113,98,86,170,66,70,102,113,201,225,205,69,153,201,249,86,10,201,137,105,135,87,42,124,152,223,211,43,209,240,232,252,42,54,5,22,0,1,96,43,209};
@@ -42,6 +43,20 @@ int main(void) {
  unsigned mac_len=0;big64(input+128,1);memcpy(input+136,STATE_COLLECTION,strlen(STATE_COLLECTION));
  char filename[80];assert(key_file((wa_slice){key_id+2,1},filename));
  assert(io.put(io.user,filename,raw_key,sizeof raw_key));
+ /* A real REMOVE may omit value. Its MAC/index still must authenticate; SET
+  * without value and malformed supplied values must remain rejected. */
+ const char *tombstone_stage;h=calloc(1,sizeof *h);assert(h);h->state_job=2;
+ assert(verify_record(h,&io,(wa_slice){remove_index_only,sizeof remove_index_only},1,NULL,NULL,NULL,&tombstone_stage));
+ assert(wa_history_next(h,&e,&time)==0);
+ assert(!verify_record(h,&io,(wa_slice){set_missing_action,sizeof set_missing_action},0,NULL,NULL,NULL,&tombstone_stage));
+ assert(!strcmp(tombstone_stage,"record-action-missing"));
+ assert(!verify_record(h,&io,(wa_slice){remove_malformed_action,sizeof remove_malformed_action},1,NULL,NULL,NULL,&tombstone_stage));
+ assert(!strcmp(tombstone_stage,"record-action-format"));
+ uint8_t bad_tombstone[sizeof remove_index_only];memcpy(bad_tombstone,remove_index_only,sizeof bad_tombstone);
+ bad_tombstone[60]^=1;
+ assert(!verify_record(h,&io,(wa_slice){bad_tombstone,sizeof bad_tombstone},1,NULL,NULL,NULL,&tombstone_stage));
+ assert(!strcmp(tombstone_stage,"record-value-mac"));wa_history_free(h);
+
  assert(expand(raw_key,sizeof raw_key,"WhatsApp Mutation Keys",derived,sizeof derived));
  assert(HMAC(EVP_sha256(),derived+96,32,input,136+strlen(STATE_COLLECTION),snapshot_mac,&mac_len));
  uint8_t snapshot[128],descriptor[64],stored_version[8];size_t sn=0,dn=0;
