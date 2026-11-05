@@ -255,14 +255,17 @@ static int add_action(wa_history *h,wa_slice index,wa_slice action) {
  h->actions[h->action_count++]=record;return 1;
 }
 static int verify_record(wa_history *h,const wa_storage *io,wa_slice record,unsigned op,
- HMAC_CTX *patch,uint8_t hash[128],char missing[129]) {
+ HMAC_CTX *patch,uint8_t hash[128],char missing[129],const char **stage) {
+ *stage="record-format";
  wa_slice index,value,id;
  if(!bytes(record,1,&index)||!bytes(index,1,&index)||index.len!=32
    ||!bytes(record,2,&value)||!bytes(value,1,&value)||value.len<64
    ||value.len>65536||(value.len-48)%16||!bytes(record,3,&id)||!bytes(id,1,&id))return 0;
  uint8_t keys[160],mac[64],last[8]={0};unsigned mn=0;int ok=0;
  uint8_t *plain=NULL;size_t size=value.len-32;
+ *stage="record-key";
  if(!mutation_keys(io,id,keys,missing))goto done;
+ *stage="record-value-mac";
  uint8_t marker=(uint8_t)(op+1);last[7]=(uint8_t)(id.len+1);
  HMAC_CTX *hm=HMAC_CTX_new();
  ok=hm&&HMAC_Init_ex(hm,keys+64,32,EVP_sha512(),NULL)
@@ -271,6 +274,7 @@ static int verify_record(wa_history *h,const wa_storage *io,wa_slice record,unsi
   &&HMAC_Final(hm,mac,&mn)&&!CRYPTO_memcmp(mac,value.ptr+size,32);
  HMAC_CTX_free(hm);
  if(!ok)goto done;
+ *stage="record-integrity";
  if(patch&&!HMAC_Update(patch,value.ptr+size,32)){ok=0;goto done;}
  if(hash){
   uint8_t contribution[128];
@@ -280,32 +284,40 @@ static int verify_record(wa_history *h,const wa_storage *io,wa_slice record,unsi
    hash[i]=(uint8_t)v;hash[i+1]=(uint8_t)(v>>8);
   }
  }
+ *stage="record-memory";
  plain=malloc(size);if(!plain){ok=0;goto done;}
+ *stage="record-decrypt";
  EVP_CIPHER_CTX *aes=EVP_CIPHER_CTX_new();int a=0,b=0;
  ok=aes&&EVP_DecryptInit_ex(aes,EVP_aes_256_cbc(),NULL,keys+32,value.ptr)>0
   &&EVP_DecryptUpdate(aes,plain,&a,value.ptr+16,(int)(size-16))>0
   &&EVP_DecryptFinal_ex(aes,plain+a,&b)>0;
  EVP_CIPHER_CTX_free(aes);
  if(ok){
+  *stage="record-action-format";
   wa_slice data={plain,(size_t)(a+b)},idx,action;
-  ok=valid(data)&&bytes(data,1,&idx)&&bytes(data,2,&action)&&valid(action)
-    &&HMAC(EVP_sha256(),keys,32,idx.ptr,idx.len,mac,&mn)&&!CRYPTO_memcmp(mac,index.ptr,32);
+  ok=valid(data)&&bytes(data,1,&idx)&&bytes(data,2,&action)&&valid(action);
+  if(ok){
+   *stage="record-index-mac";
+   ok=HMAC(EVP_sha256(),keys,32,idx.ptr,idx.len,mac,&mn)&&!CRYPTO_memcmp(mac,index.ptr,32);
+  }
   /* REMOVE drops sync metadata. Only authenticated SET applies a deletion. */
-  if(ok&&!op)ok=add_action(h,idx,action);
+  if(ok&&!op){*stage="record-action-store";ok=add_action(h,idx,action);}
  }
  done:
  if(plain){OPENSSL_cleanse(plain,size);free(plain);}
  OPENSSL_cleanse(keys,sizeof keys);return ok;
 }
 static int state_records(wa_history *h,const wa_storage *io,wa_slice data,unsigned field,
- int snapshot,HMAC_CTX *patch,uint8_t hash[128],char missing[129]) {
+ int snapshot,HMAC_CTX *patch,uint8_t hash[128],char missing[129],const char **stage) {
  reader r={data.ptr,data.len,0};unsigned f,w;wa_slice record;uint64_t value;int k;
  while((k=next(&r,&f,&w,&record,&value))>0) {
   if(f!=field||w!=2)continue;
+  *stage="mutation-format";
   uint64_t op=0;
   if(!snapshot){op=number(record,1);if(op>1||!bytes(record,2,&record))return 0;}
-  if(!verify_record(h,io,record,(unsigned)op,patch,hash,missing))return 0;
+  if(!verify_record(h,io,record,(unsigned)op,patch,hash,missing,stage))return 0;
  }
+ if(k<0)*stage="mutation-list-format";
  return k==0;
 }
 static int state_open_checked(wa_history *h,const wa_storage *io,wa_slice task,wa_slice external,char missing[129],const char **stage) {
@@ -321,30 +333,35 @@ static int state_open_checked(wa_history *h,const wa_storage *io,wa_slice task,w
  h->low=number(task,110)==1;
  const char *collection=collection_name(h->low);
  wa_slice raw=external,version,keyid,expected,snapshot_mac;
+ *stage="state-payload-format";
  if(!snapshot&&!bytes(task,103,&raw))return 0;
  if(!valid(raw))return 0;
+ *stage="state-version";
  uint64_t v=bytes(raw,1,&version)?number(version,1):number(task,108);
  uint64_t old=wa_state_version(io,h->low);
  if(!v||v>UINT32_MAX)return 0;
  int requested=snapshot&&str(task,109,h->delete_request,sizeof h->delete_request);
  if(v<=old&&!requested){h->state_version=old;return 1;}
  if(!snapshot&&v!=old+1){*stage=h->low?"version-gap-low":"version-gap-high";return 0;}
+ *stage="state-auth-format";
  if(!bytes(raw,snapshot?4:6,&keyid)||!bytes(keyid,1,&keyid)
    ||!bytes(raw,snapshot?3:5,&expected)||expected.len!=32)return 0;
- *stage="state-auth";
+ *stage="state-key";
  uint8_t keys[160],hash[128]={0},stamp[8],actual[32];unsigned n=0;
  int ok=mutation_keys(io,keyid,keys,missing);
  HMAC_CTX *hm=HMAC_CTX_new();big64(stamp,v);
  if(snapshot){
-  ok=ok&&hm&&state_records(h,io,raw,2,1,NULL,hash,missing)
+  ok=ok&&hm&&state_records(h,io,raw,2,1,NULL,hash,missing,stage)
    &&HMAC_Init_ex(hm,keys+96,32,EVP_sha256(),NULL)&&HMAC_Update(hm,hash,sizeof hash);
  }else{
   /* Authenticate the complete ordered mutation list and contiguous version. */
+  if(ok)*stage="patch-auth-format";
   ok=ok&&hm&&bytes(raw,4,&snapshot_mac)&&snapshot_mac.len==32
    &&HMAC_Init_ex(hm,keys+128,32,EVP_sha256(),NULL)&&HMAC_Update(hm,snapshot_mac.ptr,32)
-   &&state_records(h,io,raw,2,0,hm,NULL,missing)
-   &&(!external.len||state_records(h,io,external,1,0,hm,NULL,missing));
+   &&state_records(h,io,raw,2,0,hm,NULL,missing,stage)
+   &&(!external.len||state_records(h,io,external,1,0,hm,NULL,missing,stage));
  }
+ if(ok)*stage=snapshot?"snapshot-mac":"patch-mac";
  ok=ok&&HMAC_Update(hm,stamp,sizeof stamp)
   &&HMAC_Update(hm,(const uint8_t*)collection,strlen(collection))
   &&HMAC_Final(hm,actual,&n)&&!CRYPTO_memcmp(actual,expected.ptr,32);
