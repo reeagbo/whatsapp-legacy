@@ -111,6 +111,8 @@ class MainActivity : Activity() {
     private lateinit var statusLabel: TextView
     private var conversation: String? = null
     private var showingArchived=false
+    private val selectedChats=linkedSetOf<String>()
+    private var conversationScroll: ScrollView? = null
     private var messageList: LinearLayout? = null
     private var messageScroll: ScrollView? = null
     private var compose: EditText? = null
@@ -294,13 +296,20 @@ class MainActivity : Activity() {
         page=column().apply { setBackgroundColor(canvas) }
         setContentView(page)
     }
-    private fun showList(archived: Boolean = showingArchived) {
+    private fun showList(archived: Boolean = showingArchived, preserveScroll: Boolean = false) {
+        val previousY=if(preserveScroll)conversationScroll?.scrollY ?: 0 else 0
+        if(archived!=showingArchived)selectedChats.clear()
         showingArchived=archived
+        val chats=store.chats(archived)
+        val visible=chats.map { it.jid }.toSet()
+        val canonicalSelection=selectedChats.map { store.resolve(it) }.filter { it in visible }
+        selectedChats.clear();selectedChats.addAll(canonicalSelection)
         queuedHistoryPeer=null
         conversation=null; renderedMessages=emptyList(); messageList=null; messageScroll=null; compose=null; sendButton=null
-        newPage(); header(if(archived)"Archivados" else "Conversaciones",false)
+        newPage()
+        if(selectedChats.isEmpty())header(if(archived)"Archivados" else "Conversaciones",false)
+        else selectionHeader(chats)
         val rows=column().apply { setPadding(dp(12),dp(10),dp(12),dp(10)) }
-        val chats=store.chats(archived)
         if(chats.isEmpty()) rows.addView(column().apply {
             setPadding(dp(28),dp(68),dp(28),dp(28))
             addView(label(if(archived)"No hay conversaciones archivadas" else "Tu primera conversación",23f).apply { setTypeface(null,Typeface.BOLD) })
@@ -309,17 +318,92 @@ class MainActivity : Activity() {
         for(chat in chats) {
             traceIdentity(chat)
             val name=contactName(chat)
-            val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); background=shape(surface,18); minimumHeight=dp(80); isClickable=true; contentDescription="Abrir conversación con $name" }
-            row.addView(label(name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),28) },LinearLayout.LayoutParams(dp(52),dp(52)))
+            val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); background=shape(if(chat.jid in selectedChats)outgoingSurface else surface,18); minimumHeight=dp(80); isClickable=true; isSelected=chat.jid in selectedChats; contentDescription=if(selectedChats.isEmpty())"Abrir conversación con $name" else if(isSelected)"Seleccionada: $name" else "Seleccionar: $name" }
+            row.addView(label(if(chat.jid in selectedChats)"✓" else name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),28) },LinearLayout.LayoutParams(dp(52),dp(52)))
             row.addView(column().apply {
                 setPadding(dp(14),0,dp(8),0)
                 addView(label(name,18f).apply { setTypeface(null,Typeface.BOLD); setSingleLine(true) })
                 addView(label(chat.preview,14f,muted).apply { setSingleLine(true); ellipsize=android.text.TextUtils.TruncateAt.END; setPadding(0,dp(5),0,0) })
             },LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1f))
             row.addView(label(if(chat.time>0) SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(chat.time)) else "",12f,muted))
-            row.setOnClickListener { showChat(chat.jid) }; row.setOnLongClickListener { chatActions(chat.jid); true }; rows.addView(row,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(6) })
+            row.setOnClickListener { if(selectedChats.isEmpty())showChat(chat.jid) else toggleChatSelection(chat.jid) }
+            row.setOnLongClickListener { toggleChatSelection(chat.jid); true }
+            rows.addView(row,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(6) })
         }
-        page.addView(ScrollView(this).apply { addView(rows) },LinearLayout.LayoutParams(-1,0,1f))
+        val scroll=ScrollView(this).apply { addView(rows) }
+        conversationScroll=scroll
+        page.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        if(preserveScroll)scroll.post { if(conversationScroll===scroll)scroll.scrollTo(0,previousY) }
+    }
+    private fun toggleChatSelection(jid: String) {
+        if(!selectedChats.add(jid))selectedChats.remove(jid)
+        showList(preserveScroll=true)
+    }
+    private fun clearChatSelection() {
+        selectedChats.clear()
+        showList(preserveScroll=true)
+    }
+    private fun selectionHeader(chats: List<ChatStore.Chat>) {
+        val bar=LinearLayout(this).apply {
+            gravity=Gravity.CENTER_VERTICAL
+            setPadding(dp(10),dp(9),dp(10),dp(6));setBackgroundColor(surface)
+        }
+        bar.addView(action("×","Cancelar selección") { clearChatSelection() },LinearLayout.LayoutParams(dp(48),dp(52)))
+        bar.addView(label("${selectedChats.size} seleccionadas",20f).apply {
+            setTypeface(null,Typeface.BOLD);setSingleLine(true)
+        },LinearLayout.LayoutParams(0,dp(52),1f))
+        val allSelected=selectedChats.size==chats.size
+        bar.addView(action("☑",if(allSelected)"Deseleccionar todas" else "Seleccionar todas") {
+            if(allSelected)selectedChats.clear() else selectedChats.addAll(chats.map { it.jid })
+            showList(preserveScroll=true)
+        },LinearLayout.LayoutParams(dp(52),dp(52)))
+        page.addView(bar)
+        val actions=LinearLayout(this).apply {
+            setPadding(dp(12),0,dp(12),dp(8));setBackgroundColor(surface)
+        }
+        val archiveLabel=if(showingArchived)"Desarchivar" else "Archivar"
+        actions.addView(Button(this).apply {
+            text=archiveLabel;contentDescription="$archiveLabel seleccionadas"
+            setOnClickListener { applySelectedChatChange(if(showingArchived)2 else 1) }
+        },LinearLayout.LayoutParams(0,dp(52),1f))
+        actions.addView(Button(this).apply {
+            text="Eliminar";contentDescription="Eliminar seleccionadas"
+            setOnClickListener { applySelectedChatChange(0) }
+        },LinearLayout.LayoutParams(0,dp(52),1f))
+        page.addView(actions)
+        statusLabel=label(statusText,13f,muted).apply {
+            setPadding(dp(20),dp(4),dp(16),dp(12));setBackgroundColor(surface)
+        }
+        page.addView(statusLabel)
+    }
+    private fun applySelectedChatChange(change: Int) {
+        val visible=store.chats(showingArchived).map { it.jid }.toSet()
+        val peers=selectedChats.map { store.resolve(it) }.distinct().filter { it in visible }
+        if(peers.isEmpty()) { clearChatSelection();return }
+        val requests=mutableListOf<ChatChange>()
+        val changed=System.currentTimeMillis()
+        try {
+            // Commit the local batch before queueing any remote operation.
+            store.historyTransaction {
+                for(jid in peers) {
+                    val anchor=store.latestRemoteMessage(jid)
+                    if(change==0)store.deleteChatLocally(jid)
+                    else store.setArchived(jid,change==1,changed)
+                    if(anchor!=null)requests.add(ChatChange(anchor.peer,anchor.id,anchor.outgoing,anchor.time,changed,change))
+                }
+            }
+        } catch(error: Exception) {
+            debugLog.failure("CHAT_BATCH_LOCAL_FAILED",error)
+            storageFailure(error)
+            return
+        }
+        queuedChatChanges.addAll(requests)
+        selectedChats.clear()
+        if(change==0 && historyRequestPeer?.let { store.resolve(it) in peers }==true)
+            finishHistoryPage(false)
+        debugLog.add("CHAT_BATCH_LOCAL_COMMIT change=$change count=${peers.size} sync_queued=${requests.size}")
+        showList()
+        sendQueuedChatChange()
     }
     private fun archiveChat(jid: String, archive: Boolean) {
         try {
@@ -382,6 +466,7 @@ class MainActivity : Activity() {
         } };dialog.show()
     }
     private fun showChat(jid: String) {
+        selectedChats.clear();conversationScroll=null
         conversation=store.resolve(jid)
         debugLog.add("CHAT_OPEN selected=${DebugLog.addressHint(jid)} canonical=${DebugLog.addressHint(conversation!!)}")
         historyWindow=100
@@ -728,6 +813,11 @@ class MainActivity : Activity() {
             },LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(6) })
         }
         conversation?.let { jid -> item("Opciones de conversación","Archivar, editar o eliminar") { chatActions(jid) } }
+        if(conversation==null && store.chats(showingArchived).isNotEmpty())
+            item("Seleccionar todas","Archivar o eliminar varias conversaciones") {
+                selectedChats.addAll(store.chats(showingArchived).map { it.jid })
+                showList(preserveScroll=true)
+            }
         if(showingArchived) item("Conversaciones","Volver a la lista principal") { showList(false) }
         else {
             val count=store.chats(true).size
@@ -812,7 +902,7 @@ class MainActivity : Activity() {
 
     }
     @Deprecated("Legacy navigation supports Android 5")
-    override fun onBackPressed() { if(conversation!=null)showList() else if(showingArchived)showList(false) else super.onBackPressed() }
+    override fun onBackPressed() { if(selectedChats.isNotEmpty())clearChatSelection() else if(conversation!=null)showList() else if(showingArchived)showList(false) else super.onBackPressed() }
 
     private fun render(status: String, pairingCode: String, busy: Boolean) {
         if (destroyed) return

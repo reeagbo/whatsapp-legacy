@@ -124,9 +124,97 @@ tap(wait_for(lambda a: a.get('content-desc')=='Volver a conversaciones'))
 print('PASS: archiving survives restart and unarchiving restores the conversation')
 
 long_press_chat()
-tap(wait_for(text('Eliminar conversación')))
+tap(wait_for(lambda a:a.get('content-desc')=='Eliminar seleccionadas'))
 wait_for(text('Tu primera conversación'))
 adb('shell','am','force-stop',package)
 adb('shell','am','start','-n',package+'/.MainActivity')
 wait_for(text('Tu primera conversación'))
 print('PASS: immediate local chat removal persists after process death')
+
+# Seed three independent chats to verify batch scope and selection state.
+adb('shell','am','force-stop',package)
+with tempfile.TemporaryDirectory() as folder:
+    database=Path(folder)/'conversations.db'
+    database.write_bytes(adb('exec-out','run-as',package,'cat','databases/conversations.db'))
+    db=sqlite3.connect(database)
+    with db:
+        for i in range(3):
+            peer=f'3499999900{i}@s.whatsapp.net'
+            db.execute('INSERT INTO chats(jid,name,updated) VALUES(?,?,?)',
+                       (peer,f'Lote {i+1}',100+i))
+            db.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?)',
+                       (f'batch-{i}',peer,f'Mensaje lote {i+1}',0,0,100+i,''))
+    db.close()
+    subprocess.run(['adb','shell',f"run-as {package} sh -c 'cat > databases/conversations.db'"],
+                   input=database.read_bytes(),check=True)
+adb('shell','am','start','-n',package+'/.MainActivity')
+
+def desc(value):
+    return lambda a:a.get('content-desc')==value
+def long_press_name(name):
+    node=wait_for(desc('Abrir conversación con '+name))
+    x1,y1,x2,y2=map(int,re.findall(r'\d+',node.attrib['bounds']))
+    x,y=str((x1+x2)//2),str((y1+y2)//2)
+    adb('shell','input','swipe',x,y,x,y,'800')
+
+long_press_name('Lote 1')
+wait_for(text('1 seleccionadas'))
+tap(wait_for(desc('Seleccionar: Lote 2')))
+wait_for(text('2 seleccionadas'))
+# Android Back exits selection without opening a conversation or mutating data.
+adb('shell','input','keyevent','KEYCODE_BACK')
+wait_for(desc('Abrir conversación con Lote 1'))
+long_press_name('Lote 1')
+tap(wait_for(desc('Seleccionar todas')))
+wait_for(text('3 seleccionadas'))
+tap(wait_for(desc('Deseleccionar todas')))
+wait_for(desc('Abrir conversación con Lote 1'))
+long_press_name('Lote 1')
+tap(wait_for(desc('Seleccionar: Lote 2')))
+tap(wait_for(desc('Seleccionada: Lote 2')))
+wait_for(text('1 seleccionadas'))
+tap(wait_for(desc('Seleccionar: Lote 2')))
+screenshot('multiple-selection.png')
+tap(wait_for(desc('Archivar seleccionadas')))
+wait_for(desc('Abrir conversación con Lote 3'))
+assert not any(n.attrib.get('content-desc')=='Abrir conversación con Lote 1' for n in tree().iter('node'))
+adb('shell','am','force-stop',package)
+adb('shell','am','start','-n',package+'/.MainActivity')
+open_archive()
+wait_for(desc('Abrir conversación con Lote 1'))
+wait_for(desc('Abrir conversación con Lote 2'))
+assert not any(n.attrib.get('content-desc')=='Abrir conversación con Lote 3' for n in tree().iter('node'))
+long_press_name('Lote 1')
+tap(wait_for(desc('Seleccionar todas')))
+wait_for(text('2 seleccionadas'))
+screenshot('multiple-archived.png')
+tap(wait_for(desc('Desarchivar seleccionadas')))
+wait_for(text('No hay conversaciones archivadas'))
+tap(wait_for(desc('Volver a conversaciones')))
+wait_for(desc('Abrir conversación con Lote 1'))
+wait_for(desc('Abrir conversación con Lote 2'))
+wait_for(desc('Abrir conversación con Lote 3'))
+print('PASS: multiple selection, toggle, select all, deselect all, Back cancellation, scoped batch archive and unarchive')
+
+# Delete two immediately, leaving the unselected third intact after restart.
+long_press_name('Lote 1')
+tap(wait_for(desc('Seleccionar: Lote 2')))
+tap(wait_for(desc('Eliminar seleccionadas')))
+wait_for(desc('Abrir conversación con Lote 3'))
+assert not any(n.attrib.get('text') in ('1 seleccionadas','2 seleccionadas') for n in tree().iter('node'))
+adb('shell','am','force-stop',package)
+adb('shell','am','start','-n',package+'/.MainActivity')
+wait_for(desc('Abrir conversación con Lote 3'))
+for name in ('Lote 1','Lote 2'):
+    assert not any(n.attrib.get('content-desc')=='Abrir conversación con '+name for n in tree().iter('node'))
+# The menu also exposes selecting all, without a long press.
+tap(wait_for(desc('Menú principal')))
+tap(wait_for(text('Seleccionar todas')))
+wait_for(text('1 seleccionadas'))
+tap(wait_for(desc('Archivar seleccionadas')))
+wait_for(text('Tu primera conversación'))
+open_archive()
+long_press_name('Lote 3')
+tap(wait_for(desc('Eliminar seleccionadas')))
+wait_for(text('No hay conversaciones archivadas'))
+print('PASS: immediate scoped batch deletion, persistence, menu selection and deletion from archived list')
