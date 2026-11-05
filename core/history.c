@@ -652,6 +652,88 @@ static int inflate_data(const uint8_t *p,size_t n,uint8_t **out,size_t *size){
  z.next_out=b+z.total_out;z.avail_out=(uInt)(cap-z.total_out);r=inflate(&z,Z_NO_FLUSH);}
  int ok=r==Z_STREAM_END&&z.avail_in==0&&z.total_out>0;*size=(size_t)z.total_out;inflateEnd(&z);if(!ok){OPENSSL_cleanse(b,cap);free(b);return 0;}*out=b;return 1;
 }
+/* Shared authenticated media decoder for snapshots and external mutations. */
+static uint8_t *decode_media(wa_slice s,const uint8_t *enc,size_t en,int kind,size_t *size,const char **stage){
+ uint8_t *compressed=NULL;size_t cn=0;
+ *stage="media-format";
+  wa_slice mk,eh={0},ph={0};uint8_t hash[32],expanded[112],mac[32];size_t expanded_n=sizeof expanded;unsigned mn=0;
+  bytes(s,4,&eh);bytes(s,1,&ph);
+  if(!enc||en<26||en>WA_HISTORY_DOWNLOAD_MAX||(en-10)%16||!bytes(s,3,&mk)||mk.len!=32||
+     (!kind&&(!eh.ptr||!ph.ptr))||(ph.ptr&&ph.len!=32)||
+     (eh.ptr&&(eh.len!=32||!SHA256(enc,en,hash)||CRYPTO_memcmp(hash,eh.ptr,32))))return NULL;
+  EVP_PKEY_CTX *k=EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF,NULL);uint8_t salt[32]={0};const char *info=kind?"WhatsApp App State Keys":"WhatsApp History Keys";
+  int ok=k&&EVP_PKEY_derive_init(k)>0&&EVP_PKEY_CTX_set_hkdf_md(k,EVP_sha256())>0&&EVP_PKEY_CTX_set1_hkdf_salt(k,salt,32)>0&&EVP_PKEY_CTX_set1_hkdf_key(k,mk.ptr,32)>0&&EVP_PKEY_CTX_add1_hkdf_info(k,(const uint8_t*)info,(int)strlen(info))>0&&EVP_PKEY_derive(k,expanded,&expanded_n)>0;EVP_PKEY_CTX_free(k);
+  *stage="media-mac";
+  HMAC_CTX *hm=HMAC_CTX_new();ok=ok&&hm&&HMAC_Init_ex(hm,expanded+48,32,EVP_sha256(),NULL)&&HMAC_Update(hm,expanded,16)&&HMAC_Update(hm,enc,en-10)&&HMAC_Final(hm,mac,&mn)&&!CRYPTO_memcmp(mac,enc+en-10,10);HMAC_CTX_free(hm);
+  if(!ok){OPENSSL_cleanse(expanded,sizeof expanded);return NULL;}
+  *stage="media-decode";
+  compressed=malloc(en);if(!compressed){OPENSSL_cleanse(expanded,sizeof expanded);return NULL;}
+  EVP_CIPHER_CTX *aes=EVP_CIPHER_CTX_new();int a=0,b=0;ok=aes&&EVP_DecryptInit_ex(aes,EVP_aes_256_cbc(),NULL,expanded+16,expanded)>0&&EVP_DecryptUpdate(aes,compressed,&a,enc,(int)(en-10))>0&&EVP_DecryptFinal_ex(aes,compressed+a,&b)>0;EVP_CIPHER_CTX_free(aes);OPENSSL_cleanse(expanded,sizeof expanded);cn=(size_t)(a+b);
+  uint64_t length=number(s,2);ok=ok&&(!length||length==cn)&&(!ph.ptr||(SHA256(compressed,cn,hash)&&!CRYPTO_memcmp(hash,ph.ptr,32)));if(!ok){OPENSSL_cleanse(compressed,en);free(compressed);return NULL;}
+ *size=cn;return compressed;
+}
+
+/* Return the first external mutation reference in a write replay.
+ * The adapter downloads bytes; all decryption and authentication stays here. */
+int wa_history_external_task(const uint8_t *p,size_t n,uint8_t *out,size_t cap,size_t *used){
+ wa_slice task={p,n},patch,ref;reader r={p,n,0};unsigned f,w;uint64_t v;int k;
+ *used=0;
+ if(!p||!n||n>WA_HISTORY_NOTIFICATION_MAX||!valid(task))return -1;
+ while((k=next(&r,&f,&w,&patch,&v))>0){
+  if(f!=111||w!=2)continue;
+  if(!valid(patch))return -1;
+  if(bytes(patch,3,&ref)&&ref.len){
+   char path[4096];
+   if(!blob_ref(ref,out,cap,used)||!wa_history_path(out,*used,path,sizeof path)||!path[0])return -1;
+   return 1;
+  }
+ }
+ return k<0?-1:0;
+}
+/* Inline one authenticated SyncdMutations list into its original patch.
+ * The original task remains durable until the complete replay is verified.
+ * Patch/value/snapshot MACs are checked by the normal replay afterwards. */
+uint8_t *wa_history_hydrate(const uint8_t *p,size_t n,const uint8_t *enc,size_t en,size_t *out_n){
+ uint8_t descriptor[4096];size_t dn=0,plain_n=0;const char *stage;
+ *out_n=0;
+ if(wa_history_external_task(p,n,descriptor,sizeof descriptor,&dn)!=1)return NULL;
+ uint8_t *plain=decode_media((wa_slice){descriptor,dn},enc,en,1,&plain_n,&stage);
+ if(!plain)return NULL;
+ uint8_t *out=malloc(WA_HISTORY_NOTIFICATION_MAX),*expanded=malloc(WA_HISTORY_NOTIFICATION_MAX);
+ int ok=out&&expanded&&valid((wa_slice){plain,plain_n}),replaced=0;
+ reader r={p,n,0};unsigned f,w;uint64_t v;wa_slice patch,ref;int k=0;size_t previous_field=0;
+ while(ok&&(k=next(&r,&f,&w,&patch,&v))>0){
+  if(!replaced&&f==111&&w==2&&bytes(patch,3,&ref)&&ref.len){
+   size_t pn=0;reader pr={patch.ptr,patch.len,0};unsigned pf,pw;uint64_t pv;wa_slice pb;int pk=0;size_t previous=0;
+   while(ok&&(pk=next(&pr,&pf,&pw,&pb,&pv))>0){
+    if(pf!=3) {
+     size_t len=pr.pos-previous;
+     if(len>WA_HISTORY_NOTIFICATION_MAX-pn)ok=0;
+     else {memcpy(expanded+pn,patch.ptr+previous,len);pn+=len;}
+    }
+    previous=pr.pos;
+   }
+   if(pk<0)ok=0;
+   reader mr={plain,plain_n,0};unsigned mf,mw;uint64_t mv;wa_slice mutation;int mk=0;
+   while(ok&&(mk=next(&mr,&mf,&mw,&mutation,&mv))>0){
+    if(mf==1){if(mw!=2||!valid(mutation))ok=0;
+     else ok=put_bytes(2,mutation.ptr,mutation.len,expanded,WA_HISTORY_NOTIFICATION_MAX,&pn);}
+   }
+   if(mk<0)ok=0;
+   ok=ok&&put_bytes(111,expanded,pn,out,WA_HISTORY_NOTIFICATION_MAX,out_n);replaced=1;
+  }else{
+   size_t len=r.pos-previous_field;
+   if(len>WA_HISTORY_NOTIFICATION_MAX-*out_n)ok=0;
+   else {memcpy(out+*out_n,p+previous_field,len);*out_n+=len;}
+  }
+  previous_field=r.pos;
+ }
+ ok=ok&&k==0&&replaced;
+ OPENSSL_cleanse(plain,plain_n);free(plain);
+ if(expanded){OPENSSL_cleanse(expanded,WA_HISTORY_NOTIFICATION_MAX);free(expanded);}
+ if(!ok){if(out){OPENSSL_cleanse(out,WA_HISTORY_NOTIFICATION_MAX);free(out);}return NULL;}
+ return out;
+}
 wa_history *wa_history_open_diagnostic(const wa_storage *io,const uint8_t *notification,size_t n,const uint8_t *enc,size_t en,char missing[129],const char **stage){
  *stage="task-format";
  if(!notification||!n||n>WA_HISTORY_NOTIFICATION_MAX||!valid((wa_slice){notification,n}))return NULL;
@@ -671,20 +753,8 @@ wa_history *wa_history_open_diagnostic(const wa_storage *io,const uint8_t *notif
  if(!kind&&bytes(s,11,&v)&&v.len){compressed=(uint8_t*)v.ptr;cn=v.len;}
  else {
   *stage="media-format";
-  wa_slice mk,eh={0},ph={0};uint8_t hash[32],expanded[112],mac[32];size_t expanded_n=sizeof expanded;unsigned mn=0;
-  bytes(s,4,&eh);bytes(s,1,&ph);
-  if(!enc||en<26||en>WA_HISTORY_DOWNLOAD_MAX||(en-10)%16||!bytes(s,3,&mk)||mk.len!=32||
-     (!kind&&(!eh.ptr||!ph.ptr))||(ph.ptr&&ph.len!=32)||
-     (eh.ptr&&(eh.len!=32||!SHA256(enc,en,hash)||CRYPTO_memcmp(hash,eh.ptr,32))))return NULL;
-  EVP_PKEY_CTX *k=EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF,NULL);uint8_t salt[32]={0};const char *info=kind?"WhatsApp App State Keys":"WhatsApp History Keys";
-  int ok=k&&EVP_PKEY_derive_init(k)>0&&EVP_PKEY_CTX_set_hkdf_md(k,EVP_sha256())>0&&EVP_PKEY_CTX_set1_hkdf_salt(k,salt,32)>0&&EVP_PKEY_CTX_set1_hkdf_key(k,mk.ptr,32)>0&&EVP_PKEY_CTX_add1_hkdf_info(k,(const uint8_t*)info,(int)strlen(info))>0&&EVP_PKEY_derive(k,expanded,&expanded_n)>0;EVP_PKEY_CTX_free(k);
-  *stage="media-mac";
-  HMAC_CTX *hm=HMAC_CTX_new();ok=ok&&hm&&HMAC_Init_ex(hm,expanded+48,32,EVP_sha256(),NULL)&&HMAC_Update(hm,expanded,16)&&HMAC_Update(hm,enc,en-10)&&HMAC_Final(hm,mac,&mn)&&!CRYPTO_memcmp(mac,enc+en-10,10);HMAC_CTX_free(hm);
-  if(!ok){OPENSSL_cleanse(expanded,sizeof expanded);return NULL;}
-  *stage="media-decode";
-  compressed=malloc(en);if(!compressed){OPENSSL_cleanse(expanded,sizeof expanded);return NULL;}allocated=1;
-  EVP_CIPHER_CTX *aes=EVP_CIPHER_CTX_new();int a=0,b=0;ok=aes&&EVP_DecryptInit_ex(aes,EVP_aes_256_cbc(),NULL,expanded+16,expanded)>0&&EVP_DecryptUpdate(aes,compressed,&a,enc,(int)(en-10))>0&&EVP_DecryptFinal_ex(aes,compressed+a,&b)>0;EVP_CIPHER_CTX_free(aes);OPENSSL_cleanse(expanded,sizeof expanded);cn=(size_t)(a+b);
-  uint64_t length=number(s,2);ok=ok&&(!length||length==cn)&&(!ph.ptr||(SHA256(compressed,cn,hash)&&!CRYPTO_memcmp(hash,ph.ptr,32)));if(!ok){OPENSSL_cleanse(compressed,en);free(compressed);return NULL;}
+  compressed=decode_media(s,enc,en,(int)kind,&cn,stage);
+  if(!compressed)return NULL;allocated=1;
  }
  wa_history *h=calloc(1,sizeof *h);
  if(!kind)*stage="history-zlib";

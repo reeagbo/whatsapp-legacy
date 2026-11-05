@@ -155,6 +155,59 @@ int main(void) {
  assert(h->state_version==2&&h->action_count==0);
  wa_tree *next_write=wa_history_delete_patch(h,&io,"fresh","123456789@lid","last",0,1700000000000ULL,1700000003000ULL,0);
  assert(next_write);wa_tree_free(next_write);wa_history_free(h);
+
+ /* External mutation lists must replay exactly like inline records. */
+ {
+  wa_slice mutation;
+  assert(bytes((wa_slice){server_patch,server_n},2,&mutation));
+  uint8_t list[1600],media_keys[112],cipher[1800],ref[512],external_patch[1800],external_task[2200];
+  size_t list_n=0,ref_n=0,epn=0,etn=0;
+  assert(put_bytes(1,mutation.ptr,mutation.len,list,sizeof list,&list_n));
+  assert(expand(raw_key,32,"WhatsApp App State Keys",media_keys,sizeof media_keys));
+  EVP_CIPHER_CTX *aes=EVP_CIPHER_CTX_new();int x=0,y=0;
+  assert(aes&&EVP_EncryptInit_ex(aes,EVP_aes_256_cbc(),NULL,media_keys+16,media_keys)>0);
+  assert(EVP_EncryptUpdate(aes,cipher,&x,list,(int)list_n)>0);
+  assert(EVP_EncryptFinal_ex(aes,cipher+x,&y)>0);EVP_CIPHER_CTX_free(aes);
+  size_t cipher_n=(size_t)(x+y);uint8_t media_mac[32],plain_hash[32],enc_hash[32];unsigned mac_n=0;
+  HMAC_CTX *hm=HMAC_CTX_new();
+  assert(hm&&HMAC_Init_ex(hm,media_keys+48,32,EVP_sha256(),NULL)
+   &&HMAC_Update(hm,media_keys,16)&&HMAC_Update(hm,cipher,cipher_n)&&HMAC_Final(hm,media_mac,&mac_n));
+  HMAC_CTX_free(hm);memcpy(cipher+cipher_n,media_mac,10);cipher_n+=10;
+  assert(SHA256(list,list_n,plain_hash)&&SHA256(cipher,cipher_n,enc_hash));
+  assert(put_bytes(1,raw_key,32,ref,sizeof ref,&ref_n));
+  assert(put_bytes(2,(const uint8_t*)"/external-test",14,ref,sizeof ref,&ref_n));
+  assert(put_number(4,list_n,ref,sizeof ref,&ref_n));
+  assert(put_bytes(5,plain_hash,32,ref,sizeof ref,&ref_n));
+  assert(put_bytes(6,enc_hash,32,ref,sizeof ref,&ref_n));
+  reader pr={server_patch,server_n,0};unsigned pf,pw;uint64_t pv;wa_slice pb;int pk;
+  while((pk=next(&pr,&pf,&pw,&pb,&pv))>0){
+   if(pf==2)continue;
+   assert(pw==2&&put_bytes(pf,pb.ptr,pb.len,external_patch,sizeof external_patch,&epn));
+  }
+  assert(pk==0&&put_bytes(3,ref,ref_n,external_patch,sizeof external_patch,&epn));
+  memcpy(external_task,descriptor,dn);etn=dn;
+  assert(put_bytes(111,external_patch,epn,external_task,sizeof external_task,&etn));
+  uint8_t media_descriptor[4096];size_t mdn=0,prepared_n=0;
+  assert(wa_history_external_task(external_task,etn,media_descriptor,sizeof media_descriptor,&mdn)==1);
+  char media_path[64];assert(wa_history_path(media_descriptor,mdn,media_path,sizeof media_path));
+  assert(!strcmp(media_path,"/external-test"));
+  cipher[0]^=1;
+  assert(!wa_history_hydrate(external_task,etn,cipher,cipher_n,&prepared_n));cipher[0]^=1;
+  uint8_t *prepared=wa_history_hydrate(external_task,etn,cipher,cipher_n,&prepared_n);assert(prepared);
+  assert(wa_history_external_task(prepared,prepared_n,media_descriptor,sizeof media_descriptor,&mdn)==0);
+  h=calloc(1,sizeof *h);assert(h);
+  assert(state_open_checked(h,&io,(wa_slice){prepared,prepared_n},(wa_slice){snapshot,sn},NULL,&stage));
+  assert(replay_write_snapshot(h,&io,(wa_slice){prepared,prepared_n},NULL,&stage));
+  assert(h->state_version==2);wa_history_free(h);
+  /* Normalization never bypasses mutation or aggregate MAC verification. */
+  wa_slice hydrated_patch,patch_mac;
+  assert(bytes((wa_slice){prepared,prepared_n},111,&hydrated_patch)&&bytes(hydrated_patch,5,&patch_mac));
+  ((uint8_t*)patch_mac.ptr)[0]^=1;
+  h=calloc(1,sizeof *h);assert(h);
+  assert(state_open_checked(h,&io,(wa_slice){prepared,prepared_n},(wa_slice){snapshot,sn},NULL,&stage));
+  assert(!replay_write_snapshot(h,&io,(wa_slice){prepared,prepared_n},NULL,&stage));wa_history_free(h);
+  OPENSSL_cleanse(prepared,WA_HISTORY_NOTIFICATION_MAX);free(prepared);
+ }
  /* Replay acknowledgements must not skip unapplied incoming changes. */
  assert(wa_history_save(&io,write_task,write_n));
  assert(wa_history_commit(&io,0,write_task,write_n,3));assert(wa_state_version(&io,0)==2);

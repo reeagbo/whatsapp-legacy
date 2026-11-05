@@ -56,6 +56,8 @@ class MainActivity : Activity() {
     private external fun nativeDeleteSnapshot(handle: Long, cursor: Long)
     private external fun nativeHistoryDone(handle: Long, slot: Int, task: ByteArray, version: Long): Boolean
     private external fun nativeHistoryPath(task: ByteArray): String?
+    private external fun nativeHistoryExternalTask(task: ByteArray): ByteArray?
+    private external fun nativeHistoryHydrate(task: ByteArray, encrypted: ByteArray): ByteArray?
     private external fun nativeHistoryOpen(session: Long, task: ByteArray, encrypted: ByteArray, missing: Array<String?>): Long
     private external fun nativeIdentityPhone(path: String): String?
     private external fun nativeHistoryOrder(task: ByteArray): Long
@@ -566,6 +568,27 @@ class MainActivity : Activity() {
             requestQueuedHistory()
         } },120_000L)
     }
+    private fun downloadHistoryMedia(task: ByteArray): ByteArray {
+        val path=nativeHistoryPath(task) ?: throw java.io.IOException("Invalid history path")
+        debugLog.add("HISTORY_PATH kind=${if(path.isEmpty()) "inline" else "cdn-relative"}")
+        val encrypted=if(path.isEmpty()) ByteArray(0) else {
+            // A fixed host and no redirects keep media requests separate from account traffic.
+            val request=Request.Builder().url("https://mmg.whatsapp.net$path").header("Origin","https://web.whatsapp.com").build()
+            historyHttp.newCall(request).execute().use { response ->
+                debugLog.add("HISTORY_DOWNLOAD http=${response.code}")
+                if(!response.isSuccessful)throw java.io.IOException("History download unavailable")
+                val body=response.body ?: throw java.io.IOException("Empty history download")
+                if(body.contentLength()>8L*1024*1024)throw java.io.IOException("History chunk too large")
+                body.byteStream().use { input ->
+                    val output=java.io.ByteArrayOutputStream();val buffer=ByteArray(16384)
+                    while(true) { val n=input.read(buffer);if(n<0)break;if(output.size()+n>8*1024*1024)throw java.io.IOException("History chunk too large");output.write(buffer,0,n) }
+                    output.toByteArray()
+                }
+            }
+        }
+        debugLog.add("HISTORY_DOWNLOAD_COMPLETE bytes=${encrypted.size}")
+        return encrypted
+    }
     private fun scheduleHistory(force: Boolean = false) {
         if(historyBusy || destroyed)return
         val active=connection ?: return
@@ -586,28 +609,26 @@ class MainActivity : Activity() {
                     var handle=0L
                     var stage="path"
                     try {
-                        val path=nativeHistoryPath(task) ?: throw java.io.IOException("Invalid history path")
-                        debugLog.add("HISTORY_PATH kind=${if(path.isEmpty()) "inline" else "cdn-relative"}")
-                        stage="download"
-                        val encrypted=if(path.isEmpty()) ByteArray(0) else {
-                            // A fixed host and no redirects keep media requests separate from account traffic.
-                            val request=Request.Builder().url("https://mmg.whatsapp.net$path").header("Origin","https://web.whatsapp.com").build()
-                            historyHttp.newCall(request).execute().use { response ->
-                                debugLog.add("HISTORY_DOWNLOAD http=${response.code}")
-                                if(!response.isSuccessful)throw java.io.IOException("History download unavailable")
-                                val body=response.body ?: throw java.io.IOException("Empty history download")
-                                if(body.contentLength()>8L*1024*1024)throw java.io.IOException("History chunk too large")
-                                body.byteStream().use { input ->
-                                    val output=java.io.ByteArrayOutputStream();val buffer=ByteArray(16384)
-                                    while(true) { val n=input.read(buffer);if(n<0)break;if(output.size()+n>8*1024*1024)throw java.io.IOException("History chunk too large");output.write(buffer,0,n) }
-                                    output.toByteArray()
-                                }
-                            }
+                        val encrypted=downloadHistoryMedia(task)
+                        var prepared=task
+                        var externalCount=0
+                        while(true) {
+                            if(Thread.currentThread().isInterrupted)throw java.io.InterruptedIOException()
+                            stage="external-reference"
+                            val reference=nativeHistoryExternalTask(prepared)
+                                ?: throw java.io.IOException("Invalid external mutations reference")
+                            if(reference.isEmpty())break
+                            if(++externalCount>256)throw java.io.IOException("Too many external mutation lists")
+                            stage="external-download"
+                            val media=downloadHistoryMedia(reference)
+                            stage="external-decode"
+                            prepared=nativeHistoryHydrate(prepared,media)
+                                ?: throw java.io.IOException("External mutations integrity or format check failed")
+                            debugLog.add("APP_STATE_EXTERNAL_MUTATIONS_READY count=$externalCount")
                         }
-                        debugLog.add("HISTORY_DOWNLOAD_COMPLETE bytes=${encrypted.size}")
                         stage="decode"
                         val missing=arrayOfNulls<String>(1)
-                        handle=active.openHistory(task,encrypted,missing)
+                        handle=active.openHistory(prepared,encrypted,missing)
                         missing[0]?.let {
                             debugLog.add("APP_STATE_KEY_MISSING")
                             active.requestSyncKey(it)

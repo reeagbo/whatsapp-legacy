@@ -262,3 +262,30 @@ JNIEXPORT jobjectArray JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nati
  for(int i=0;i<6;i++){jstring value=utf8_string(env,fields[i]);if(!value)return NULL;(*env)->SetObjectArrayElement(env,out,i,value);(*env)->DeleteLocalRef(env,value);}return out;
 }
 JNIEXPORT void JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryClose(JNIEnv *env,jobject self,jlong h){(void)env;(void)self;wa_history_free((wa_history*)(intptr_t)h);}
+
+/* Stateless preparation of external write-replay mutations. */
+JNIEXPORT jbyteArray JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryExternalTask(JNIEnv *env,jobject self,jbyteArray task){
+ (void)self;if(!task)return NULL;
+ jsize n=(*env)->GetArrayLength(env,task);if(n<=0||n>WA_HISTORY_NOTIFICATION_MAX)return NULL;
+ jbyte *p=(*env)->GetByteArrayElements(env,task,NULL);if(!p)return NULL;
+ uint8_t descriptor[4096];size_t dn=0;
+ int r=wa_history_external_task((uint8_t*)p,(size_t)n,descriptor,sizeof descriptor,&dn);
+ (*env)->ReleaseByteArrayElements(env,task,p,JNI_ABORT);
+ jbyteArray out=r<0?NULL:(*env)->NewByteArray(env,(jsize)dn);
+ if(out&&dn)(*env)->SetByteArrayRegion(env,out,0,(jsize)dn,(jbyte*)descriptor);
+ OPENSSL_cleanse(descriptor,sizeof descriptor);return out;
+}
+JNIEXPORT jbyteArray JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryHydrate(JNIEnv *env,jobject self,jbyteArray task,jbyteArray encrypted){
+ (void)self;if(!task||!encrypted)return NULL;
+ jsize n=(*env)->GetArrayLength(env,task),en=(*env)->GetArrayLength(env,encrypted);
+ if(n<=0||n>WA_HISTORY_NOTIFICATION_MAX||en<=0||en>WA_HISTORY_DOWNLOAD_MAX)return NULL;
+ jbyte *p=(*env)->GetByteArrayElements(env,task,NULL);if(!p)return NULL;
+ jbyte *b=(*env)->GetByteArrayElements(env,encrypted,NULL);
+ if(!b){(*env)->ReleaseByteArrayElements(env,task,p,JNI_ABORT);return NULL;}
+ size_t used=0;uint8_t *prepared=wa_history_hydrate((uint8_t*)p,(size_t)n,(uint8_t*)b,(size_t)en,&used);
+ (*env)->ReleaseByteArrayElements(env,task,p,JNI_ABORT);
+ (*env)->ReleaseByteArrayElements(env,encrypted,b,JNI_ABORT);
+ jbyteArray out=prepared?(*env)->NewByteArray(env,(jsize)used):NULL;
+ if(out)(*env)->SetByteArrayRegion(env,out,0,(jsize)used,(jbyte*)prepared);
+ if(prepared){OPENSSL_cleanse(prepared,WA_HISTORY_NOTIFICATION_MAX);free(prepared);}return out;
+}

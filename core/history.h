@@ -23,6 +23,9 @@ int wa_history_done(const wa_storage *,unsigned,const uint8_t *,size_t);
 /* Only direct HTTPS paths under WhatsApp's media host are exposed to the adapter. */
 int wa_history_response(const uint8_t *,size_t);
 int wa_history_path(const uint8_t *,size_t,char *,size_t);
+/* 1 reference, 0 complete, -1 invalid. Hydrated tasks are bounded by the notification limit. */
+int wa_history_external_task(const uint8_t *,size_t,uint8_t *,size_t,size_t *);
+uint8_t *wa_history_hydrate(const uint8_t *,size_t,const uint8_t *,size_t,size_t *);
 typedef struct wa_history wa_history;
 void wa_history_write_diagnostic(const uint8_t *,size_t,char *,size_t);
 wa_history *wa_history_open_diagnostic(const wa_storage *,const uint8_t *,size_t,const uint8_t *,size_t,char [129],const char **);
