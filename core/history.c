@@ -262,11 +262,23 @@ static int add_action(wa_history *h,wa_slice index,wa_slice action) {
 }
 static int verify_record(wa_history *h,const wa_storage *io,wa_slice record,unsigned op,
  HMAC_CTX *patch,uint8_t hash[128],char missing[129],const char **stage) {
- *stage="record-format";
+ *stage="record-envelope-format";
  wa_slice index,value,id;
- if(!bytes(record,1,&index)||!bytes(index,1,&index)||index.len!=32
-   ||!bytes(record,2,&value)||!bytes(value,1,&value)||value.len<64
-   ||value.len>65536||(value.len-48)%16||!bytes(record,3,&id)||!bytes(id,1,&id))return 0;
+ if(!valid(record))return 0;
+ *stage="record-index-format";
+ if(!bytes(record,1,&index)||!bytes(index,1,&index))return 0;
+ *stage="record-index-size";
+ if(index.len!=32)return 0;
+ *stage="record-value-format";
+ if(!bytes(record,2,&value)||!bytes(value,1,&value))return 0;
+ *stage="record-value-size";
+ /* The enclosing download is already bounded. Real snapshot records need
+  * not fit the former arbitrary 64 KiB per-record cap. */
+ if(value.len<64||value.len>WA_HISTORY_DOWNLOAD_MAX)return 0;
+ *stage="record-value-alignment";
+ if((value.len-48)%16)return 0;
+ *stage="record-keyid-format";
+ if(!bytes(record,3,&id)||!bytes(id,1,&id))return 0;
  uint8_t keys[160],mac[64],last[8]={0};unsigned mn=0;int ok=0;
  uint8_t *plain=NULL;size_t size=value.len-32;
  *stage="record-key";

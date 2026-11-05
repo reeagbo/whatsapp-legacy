@@ -78,6 +78,23 @@ int main(void) {
  bad_tombstone[60]^=1;
  assert(!verify_record(h,&io,(wa_slice){bad_tombstone,sizeof bad_tombstone},1,NULL,NULL,NULL,&tombstone_stage));
  assert(!strcmp(tombstone_stage,"record-value-mac"));wa_history_free(h);
+ /* Oversized snapshot records must reach authentication; the outer download
+  * limit is the bound. Unauthenticated large values must still be rejected. */
+ size_t large_size=65552,large_used=0,envelope_used=0;
+ uint8_t *large_value=calloc(1,large_size),*large_blob=malloc(large_size+16),*large_record=malloc(large_size+128);
+ assert(large_value&&large_blob&&large_record);
+ assert(put_bytes(1,large_value,large_size,large_blob,large_size+16,&large_used));
+ const uint8_t *fixture_record=remove_index_only;wa_slice fixture_index,fixture_key;
+ assert(bytes((wa_slice){fixture_record,sizeof remove_index_only},1,&fixture_index));
+ assert(bytes((wa_slice){fixture_record,sizeof remove_index_only},3,&fixture_key));
+ assert(put_bytes(1,fixture_index.ptr,fixture_index.len,large_record,large_size+128,&envelope_used));
+ assert(put_bytes(2,large_blob,large_used,large_record,large_size+128,&envelope_used));
+ assert(put_bytes(3,fixture_key.ptr,fixture_key.len,large_record,large_size+128,&envelope_used));
+ h=calloc(1,sizeof *h);assert(h);
+ assert(!verify_record(h,&io,(wa_slice){large_record,envelope_used},1,NULL,NULL,NULL,&tombstone_stage));
+ assert(!strcmp(tombstone_stage,"record-value-mac"));
+ wa_history_free(h);free(large_value);free(large_blob);free(large_record);
+
 
  assert(expand(raw_key,sizeof raw_key,"WhatsApp Mutation Keys",derived,sizeof derived));
  assert(HMAC(EVP_sha256(),derived+96,32,input,136+strlen(STATE_COLLECTION),snapshot_mac,&mac_len));
