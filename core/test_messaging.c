@@ -29,6 +29,19 @@ int main(void){
  wa_storage a,b,p;assert(wa_storage_posix(&a,pa)&&wa_storage_posix(&b,pbdir)&&wa_storage_posix(&p,pp));wa_identity ai,bi,pi;assert(wa_identity_generate(&ai)&&wa_identity_generate(&bi)&&wa_identity_generate(&pi));
  strcpy(ai.jid,"34111111111:1@s.whatsapp.net");memcpy(ai.account,"synthetic-certificate",21);ai.account_len=21;
  capture c={0};wa_messenger *m=wa_messenger_create(&ai,&a,"11111111:1@lid",capture_node,&c);wa_signal *bob=wa_signal_create(&bi,&b),*primary=wa_signal_create(&pi,&p);assert(m&&bob&&primary);
+ assert(!wa_messenger_write_pending(m,"expired"));
+ strcpy(m->delete_id,"write");strcpy(m->delete_snapshot,"snapshot");
+ assert(wa_messenger_write_pending(m,"snapshot")&&!wa_messenger_write_pending(m,"other"));
+ m->delete_id[0]=0;assert(!wa_messenger_write_pending(m,"snapshot"));m->delete_snapshot[0]=0;
+ /* One server notification can update both collections. */
+ wa_tree *notice=wa_tree_create();assert(notice);
+ wa_node *nr=wa_node_add(notice,NULL,"notification");
+ assert(wa_node_attr(nr,"type","server_sync")&&wa_node_attr(nr,"id","notice")&&wa_node_attr(nr,"from","s.whatsapp.net"));
+ wa_node *nc=wa_node_add(notice,nr,"collection");assert(wa_node_attr(nc,"name","regular_high"));
+ nc=wa_node_add(notice,nr,"collection");assert(wa_node_attr(nc,"name","regular_low"));
+ m->now=7;m->sync_due[0]=m->sync_due[1]=1000;
+ assert(wa_messenger_node(m,nr)&&m->sync_due[0]==7&&m->sync_due[1]==7);
+ m->now=0;m->sync_due[0]=m->sync_due[1]=0;wa_tree_free(notice);
  /* Persistent, strict cross-domain mapping; unknown LIDs remain opaque. */
  char resolved[128];
  assert(wa_messenger_resolve(m,"11111111:1@lid",resolved)&&!strcmp(resolved,"34111111111@s.whatsapp.net"));

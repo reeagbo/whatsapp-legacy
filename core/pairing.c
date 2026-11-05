@@ -372,7 +372,21 @@ int wa_pair_resolve(wa_pair_session *s,const char *jid,char out[128]) {
   return s&&wa_messenger_resolve(s->messenger,jid,out);
 }
 int wa_pair_history(wa_pair_session *s,const char *jid,const char *anchor,int own,uint64_t time,const char *id) {return s&&wa_messenger_history(s->messenger,jid,anchor,own,time,id);}
-int wa_pair_history_task(wa_pair_session *s,unsigned slot,uint8_t *out,size_t cap,size_t *n) {return s&&s->messenger?wa_history_task(&s->message_storage,slot,out,cap,n):-1;}
+int wa_pair_history_task(wa_pair_session *s,unsigned slot,uint8_t *out,size_t cap,size_t *n) {
+ if(!s||!s->messenger)return -1;
+ int found=wa_history_task(&s->message_storage,slot,out,cap,n);wa_slice request;
+ if(found==1&&wa_pb_bytes_field(out,*n,109,&request)){
+  char token[48];
+  int live=request.len>0&&request.len<sizeof token&&!memchr(request.ptr,0,request.len);
+  if(live){memcpy(token,request.ptr,request.len);token[request.len]=0;live=wa_messenger_write_pending(s->messenger,token);}
+  if(!live){
+   int cleared=wa_history_done(&s->message_storage,slot,out,*n);
+   trace(s,"APP_STATE_STALE_WRITE_TASK discarded=%d",cleared);
+   return cleared?0:-1;
+  }
+ }
+ return found;
+}
 wa_history *wa_pair_history_open(wa_pair_session *s,const uint8_t *p,size_t n,const uint8_t *enc,size_t en,char missing[129]){
  if(!s||!s->messenger)return NULL;
  const char *stage;

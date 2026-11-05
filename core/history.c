@@ -160,7 +160,7 @@ static int write_state_task(const wa_storage *io,const wa_node *snapshot,const w
  const wa_node *patches=wa_node_child(collection,"patches");
  for(const wa_node *p=patches?patches->child:collection->child;p&&ok;p=p->next)
   if(!strcmp(p->tag,"patch"))ok=put_bytes(111,p->data,p->data_len,task,WA_HISTORY_NOTIFICATION_MAX,&n);
- if(ok){char name[32];key(WA_HISTORY_PATCH_TASKS+(unsigned)low,name);ok=io->put(io->user,name,task,n);}
+ if(ok){char name[32];key(WA_HISTORY_PATCH_TASKS+2+(unsigned)low,name);ok=io->put(io->user,name,task,n);}
  OPENSSL_cleanse(task,WA_HISTORY_NOTIFICATION_MAX);free(task);return ok;
 }
 int wa_state_collect(const wa_storage *io,const wa_node *result,const char *request,int low) {
@@ -169,6 +169,8 @@ int wa_state_collect(const wa_storage *io,const wa_node *result,const char *requ
  for(wa_node *collection=sync?sync->child:NULL;collection;collection=collection->next) {
   const char *name=wa_node_get(collection,"name");
   if(strcmp(collection->tag,"collection")||!name||strcmp(name,collection_name(low)))continue;
+  const char *collection_type=wa_node_get(collection,"type");
+  if(wa_node_child(collection,"error")||(collection_type&&!strcmp(collection_type,"error")))return 0;
   found=1;
   const char *has_more=wa_node_get(collection,"has_more_patches");
   if(has_more&&!strcmp(has_more,"true"))more=1;

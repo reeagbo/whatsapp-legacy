@@ -218,6 +218,15 @@ int main(void) {
   assert(wa_history_done(&io,slot,stored,n));
  }
  assert(wa_history_task(&io,2,stored,sizeof stored,&n)==0);
+ /* Incoming recovery cannot overwrite a pending outgoing write base. */
+ assert(state_task(&io,&snapshot_node,1,0,NULL,1));
+ assert(write_state_task(&io,&snapshot_node,page_collection,"pending-write",1,0));
+ assert(wa_history_task(&io,WA_HISTORY_PATCH_TASKS+1,stored,sizeof stored,&n)==1);
+ assert(wa_history_done(&io,WA_HISTORY_PATCH_TASKS+1,stored,n));
+ assert(wa_history_task(&io,WA_HISTORY_PATCH_TASKS+3,stored,sizeof stored,&n)==1);
+ assert(wa_history_done(&io,WA_HISTORY_PATCH_TASKS+3,stored,n));
+ assert(wa_node_attr(page_collection,"type","error"));
+ assert(wa_state_collect(&io,page_root,NULL,1)==0);
  assert(io.put(io.user,version_key(1),NULL,0));wa_tree_free(page);
  wa_storage_posix_close(&io);assert(!rmdir(folder));
  /* A remote chat removal carries the last included message in Unix seconds. */

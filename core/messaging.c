@@ -388,6 +388,9 @@ int wa_messenger_delete_chat(wa_messenger *m,const char *peer,const char *anchor
  if(send(m,wa_state_query(&m->io,m->delete_snapshot,1,change!=0)))return 1;
  m->delete_id[0]=0;m->delete_snapshot[0]=0;m->delete_deadline=0;return 0;
 }
+int wa_messenger_write_pending(const wa_messenger *m,const char *request){
+ return m&&request&&m->delete_id[0]&&m->delete_snapshot[0]&&!strcmp(m->delete_snapshot,request);
+}
 void wa_messenger_delete_snapshot(wa_messenger *m,const struct wa_history *h){
  if(!m||!m->delete_snapshot[0]||strcmp(m->delete_snapshot,wa_history_delete_request(h)))return;
  m->delete_snapshot[0]=0;
@@ -399,9 +402,14 @@ void wa_messenger_delete_snapshot(wa_messenger *m,const struct wa_history *h){
 int wa_messenger_node(wa_messenger *m,const wa_node *node){
  if(!m||!node)return 0;const char *id=wa_node_get(node,"id"),*type=wa_node_get(node,"type");
  if(!strcmp(node->tag,"notification")&&type&&!strcmp(type,"server_sync")){
-  const char *name=wa_node_get(wa_node_child(node,"collection"),"name");
-  if(!name||!strcmp(name,"regular_high"))m->sync_due[0]=m->now;
-  if(!name||!strcmp(name,"regular_low"))m->sync_due[1]=m->now;
+  int found=0;
+  for(const wa_node *c=node->child;c;c=c->next){
+   if(strcmp(c->tag,"collection"))continue;
+   const char *name=wa_node_get(c,"name");found=1;
+   if(!name||!strcmp(name,"regular_high"))m->sync_due[0]=m->now;
+   if(!name||!strcmp(name,"regular_low"))m->sync_due[1]=m->now;
+  }
+  if(!found)m->sync_due[0]=m->sync_due[1]=m->now;
   return ack(m,node,"notification");
  }
  if(!strcmp(node->tag,"iq")&&id){
