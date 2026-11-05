@@ -160,7 +160,7 @@ int main(void) {
   wa_tree *archive=wa_history_delete_patch(h,&io,"archive","123456789@lid","last",0,1700000000000ULL,1700000003000ULL,1);
   assert(archive);wa_history_free(h);
   wa_node *ap=wa_node_child(wa_node_child(wa_node_child(archive->root,"sync"),"collection"),"patch");assert(ap);
-  server_n=0;assert(put_bytes(1,delta_version,sizeof delta_version,server_patch,sizeof server_patch,&server_n));
+  server_n=0; /* Server deltas may omit version; MAC authenticates the inferred next version. */
   memcpy(server_patch+server_n,ap->data,ap->data_len);server_n+=ap->data_len;
   memcpy(write_task,low_descriptor,ldn);write_n=ldn;
   assert(put_bytes(111,server_patch,server_n,write_task,sizeof write_task,&write_n));

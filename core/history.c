@@ -459,11 +459,11 @@ static int replay_write_snapshot(wa_history *h,const wa_storage *io,wa_slice tas
   if(f!=111||w!=2)continue;
   *stage="write-patch-format";
   wa_slice patch_key,key,snapshot_mac,expected,external;
-  if(!valid(patch)||bytes(patch,3,&external)||!bytes(patch,1,&version_blob)
+  if(!valid(patch)||(bytes(patch,3,&external)&&external.len)
     ||!bytes(patch,6,&patch_key)||!bytes(patch_key,1,&key)
     ||!bytes(patch,4,&snapshot_mac)||snapshot_mac.len!=32
     ||!bytes(patch,5,&expected)||expected.len!=32)goto done;
-  uint64_t version=number(version_blob,1);
+  uint64_t version=bytes(patch,1,&version_blob)?number(version_blob,1):h->state_version+1;
   if(version!=h->state_version+1){*stage="write-version-gap";goto done;}
   uint8_t keys[160],actual[32],stamp[8];unsigned mn=0;big64(stamp,version);
   *stage="write-patch-key";
