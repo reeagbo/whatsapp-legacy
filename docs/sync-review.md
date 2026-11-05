@@ -4,7 +4,7 @@ Reviewed receive notifications, bounded delta queues, snapshot/delta authenticat
 write-base replay, cursor persistence, local archive/deletion handling, JNI task
 handoff and outgoing operation lifecycle.
 
-## Corrections in 0.26
+## Corrections in 0.26–0.27
 
 - Process every collection in a server_sync notification, not only its first child.
 - Reject collection-level errors instead of reporting successful synchronization.
@@ -26,8 +26,8 @@ runs the full suite, Android unit tests, lint and emulator UI checks for this bu
 ## Remaining limits
 
 These tests do not establish acceptance by the live WhatsApp service. Outgoing
-write-base reconstruction currently fails closed if its response spans additional
-server pages or references external mutations; no partial base is sent. Local UI
+write-base reconstruction now continues across server pages using sealed checkpoints.
+Responses referencing external mutations still fail closed; no partial base is sent. Local UI
 changes survive restart, but the outgoing Android request queue itself is in memory;
 interrupted outgoing operations are recorded in diagnostics rather than guaranteed
 to retry after process death. These require separate implementation work and must

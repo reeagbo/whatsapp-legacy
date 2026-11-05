@@ -166,7 +166,9 @@ int main(void) {
   assert(put_bytes(111,server_patch,server_n,write_task,sizeof write_task,&write_n));
   big64(stored_version,2);assert(io.put(io.user,version_key(1),stored_version,8));
   h=calloc(1,sizeof *h);assert(h&&state_open_checked(h,&io,(wa_slice){write_task,write_n},(wa_slice){low_snapshot,ln},NULL,&stage));
+  assert(put_number(112,1,write_task,sizeof write_task,&write_n));
   assert(replay_write_snapshot(h,&io,(wa_slice){write_task,write_n},NULL,&stage)&&h->state_version==2);
+  assert(wa_history_write_more(h)&&wa_history_save_write_base(h,&io));
   wa_tree *unarchive=wa_history_delete_patch(h,&io,"unarchive","123456789@lid","last",0,1700000000000ULL,1700000004000ULL,0);
   assert(unarchive);wa_history_free(h);
   ap=wa_node_child(wa_node_child(wa_node_child(unarchive->root,"sync"),"collection"),"patch");assert(ap);
@@ -175,7 +177,17 @@ int main(void) {
   assert(put_bytes(103,ap->data,ap->data_len,patch_task,sizeof patch_task,&ptn));
   h=wa_history_open_sync(&io,patch_task,ptn,NULL,0,NULL);
   assert(h&&wa_history_next(h,&e,&time)==1&&!strcmp(e.kind,"archive")&&e.state==0);
-  wa_history_free(h);wa_tree_free(archive);wa_tree_free(unarchive);
+  wa_history_free(h);
+  wa_node *continuation=wa_node_child(wa_node_child(unarchive->root,"sync"),"collection");
+  assert(write_state_task(&io,NULL,continuation,"request",1,0));
+  assert(wa_history_task(&io,WA_HISTORY_PATCH_TASKS+3,stored,sizeof stored,&n)==1);
+  char inline_path[8];assert(wa_history_path(stored,n,inline_path,sizeof inline_path)&&!inline_path[0]);
+  h=wa_history_open_sync(&io,stored,n,NULL,0,NULL);
+  assert(h&&wa_history_version(h)==3&&!wa_history_write_more(h)&&h->action_count==0);
+  assert(wa_state_version(&io,1)==2);wa_history_free(h);
+  assert(wa_history_done(&io,WA_HISTORY_PATCH_TASKS+3,stored,n));
+  assert(io.put(io.user,"write-base-low",NULL,0));
+  wa_tree_free(archive);wa_tree_free(unarchive);
   assert(io.put(io.user,version_key(1),NULL,0));
  }
  assert(wa_state_version(&io,0)==1&&io.put(io.user,STATE_VERSION_KEY,NULL,0)&&io.put(io.user,filename,NULL,0));

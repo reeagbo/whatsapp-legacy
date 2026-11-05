@@ -393,6 +393,10 @@ int wa_messenger_write_pending(const wa_messenger *m,const char *request){
 }
 void wa_messenger_delete_snapshot(wa_messenger *m,const struct wa_history *h){
  if(!m||!m->delete_snapshot[0]||strcmp(m->delete_snapshot,wa_history_delete_request(h)))return;
+ if(wa_history_write_more(h)){
+  if(!wa_history_save_write_base(h,&m->io)||!send(m,wa_state_query_after(wa_history_version(h),m->delete_snapshot,m->chat_change!=0))){delete_result(m,-8);return;}
+  m->delete_deadline=m->now+90000;return;
+ }
  m->delete_snapshot[0]=0;
  wa_tree *patch=wa_history_delete_patch(h,&m->io,m->delete_id,m->delete_peer,m->delete_anchor,
     m->delete_own,m->delete_time,m->delete_changed,m->chat_change==1);
@@ -418,7 +422,7 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
    wa_node *collection=wa_node_child(sync,"collection");
    const char *name=wa_node_get(collection,"name");
    if(!type||strcmp(type,"result"))delete_result(m,-4);
-   else if(!name||strcmp(name,m->chat_change?"regular_low":"regular_high")||!wa_node_child(collection,"snapshot"))
+   else if(!name||strcmp(name,m->chat_change?"regular_low":"regular_high"))
     delete_result(m,-5);
    else if(!wa_state_collect(&m->io,node,m->delete_snapshot,m->chat_change!=0))delete_result(m,-6);
    else event(m,"state-sync","","",name,0);

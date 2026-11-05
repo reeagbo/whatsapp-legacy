@@ -7,12 +7,16 @@
 #define WA_HISTORY_NOTIFICATION_MAX (1024u*1024u)
 #define WA_HISTORY_DOWNLOAD_MAX (8u*1024u*1024u)
 #define WA_HISTORY_PLAIN_MAX (32u*1024u*1024u)
+struct wa_history;
 /* Notification bytes are saved before Signal commits. No network/platform here. */
 int wa_history_save(const wa_storage *,const uint8_t *,size_t);
 int wa_history_task(const wa_storage *,unsigned,uint8_t *,size_t,size_t *);
 int wa_state_save_keys(const wa_storage *,const uint8_t *,size_t);
 wa_tree *wa_state_query(const wa_storage *,const char *id,int force_snapshot,int low);
 int wa_state_collect(const wa_storage *,const wa_node *,const char *snapshot_request,int low);
+wa_tree *wa_state_query_after(uint64_t,const char *,int);
+int wa_history_write_more(const struct wa_history *);
+int wa_history_save_write_base(const struct wa_history *,const wa_storage *);
 uint64_t wa_state_version(const wa_storage *,int low);
 int wa_history_save_mutation(const wa_storage *,const char *,const char *,const char *,int,uint64_t,const char *);
 int wa_history_done(const wa_storage *,unsigned,const uint8_t *,size_t);

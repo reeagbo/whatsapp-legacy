@@ -38,7 +38,7 @@ int wa_history_save(const wa_storage *io,const uint8_t *p,size_t n){
  end:OPENSSL_cleanse(b,WA_HISTORY_NOTIFICATION_MAX);free(b);return ok;
 }
 int wa_history_done(const wa_storage *io,unsigned slot,const uint8_t *p,size_t n){uint8_t *b=malloc(WA_HISTORY_NOTIFICATION_MAX);if(!b)return 0;size_t z=0;int r=wa_history_task(io,slot,b,WA_HISTORY_NOTIFICATION_MAX,&z);int ok=r==0;if(r==1&&z==n&&!CRYPTO_memcmp(p,b,n)){char k[32];key(slot,k);ok=io->put(io->user,k,NULL,0);}OPENSSL_cleanse(b,WA_HISTORY_NOTIFICATION_MAX);free(b);return ok;}
-int wa_history_path(const uint8_t *p,size_t n,char *out,size_t cap){wa_slice s={p,n},inline_data;if((bytes(s,11,&inline_data)&&inline_data.len)||(number(s,101)>=2&&!bytes(s,5,&inline_data))){if(cap)out[0]=0;return 1;}/* directPath is a CDN-relative path, not necessarily the upload /mms/ route.
+int wa_history_path(const uint8_t *p,size_t n,char *out,size_t cap){wa_slice s={p,n},inline_data;if((bytes(s,113,&inline_data)&&inline_data.len)||(bytes(s,11,&inline_data)&&inline_data.len)||(number(s,101)>=2&&!bytes(s,5,&inline_data))){if(cap)out[0]=0;return 1;}/* directPath is a CDN-relative path, not necessarily the upload /mms/ route.
  * The adapter fixes the HTTPS host and refuses redirects. */
  if(!str(s,5,out,cap)||out[0]!='/'||!out[1]||out[1]=='/')return 0;for(const char *c=out;*c;c++)if((unsigned char)*c<=32||(unsigned char)*c>=127||*c=='\\'||*c=='#')return 0;return 1;}
 int wa_history_response(const uint8_t *p,size_t n) {
@@ -156,7 +156,14 @@ static int write_state_task(const wa_storage *io,const wa_node *snapshot,const w
   &&put_number(110,low!=0,task,WA_HISTORY_NOTIFICATION_MAX,&n)
   &&put_number(112,more!=0,task,WA_HISTORY_NOTIFICATION_MAX,&n)
   &&put_bytes(109,(const uint8_t*)request,strlen(request),task,WA_HISTORY_NOTIFICATION_MAX,&n)
-  &&blob_ref((wa_slice){snapshot->data,snapshot->data_len},task,WA_HISTORY_NOTIFICATION_MAX,&n);
+  ;
+ if(ok&&snapshot)ok=blob_ref((wa_slice){snapshot->data,snapshot->data_len},task,WA_HISTORY_NOTIFICATION_MAX,&n);
+ else if(ok){
+  uint8_t *base=malloc(WA_HISTORY_NOTIFICATION_MAX);size_t size=0;
+  ok=base&&io->get(io->user,low?"write-base-low":"write-base-high",base,WA_HISTORY_NOTIFICATION_MAX,&size)==1
+   &&put_bytes(113,base,size,task,WA_HISTORY_NOTIFICATION_MAX,&n);
+  if(base){OPENSSL_cleanse(base,WA_HISTORY_NOTIFICATION_MAX);free(base);}
+ }
  const wa_node *patches=wa_node_child(collection,"patches");
  for(const wa_node *p=patches?patches->child:collection->child;p&&ok;p=p->next)
   if(!strcmp(p->tag,"patch"))ok=put_bytes(111,p->data,p->data_len,task,WA_HISTORY_NOTIFICATION_MAX,&n);
@@ -177,7 +184,7 @@ int wa_state_collect(const wa_storage *io,const wa_node *result,const char *requ
   const char *version=wa_node_get(collection,"version");
   uint64_t fallback=version?strtoull(version,NULL,10):0;
   wa_node *snapshot=wa_node_child(collection,"snapshot");
-  if(request&&snapshot)return write_state_task(io,snapshot,collection,request,low,more)?1:0;
+  if(request)return write_state_task(io,snapshot,collection,request,low,more)?1:0;
   if(snapshot&&!state_task(io,snapshot,1,0,request,low))return 0;
   wa_node *patches=wa_node_child(collection,"patches");
   unsigned queued=0;
@@ -214,6 +221,7 @@ static wa_tree *state_query(uint64_t v,const char *id,int snapshot,int low) {
   &&wa_node_attr(collection,"return_snapshot",snapshot?"true":"false");
  if(!ok){wa_tree_free(t);return NULL;}return t;
 }
+wa_tree *wa_state_query_after(uint64_t version,const char *id,int low){return state_query(version,id,0,low);}
 wa_tree *wa_state_query(const wa_storage *io,const char *id,int force_snapshot,int low) {
  uint64_t v=force_snapshot?0:wa_state_version(io,low);
  return state_query(v,id,force_snapshot||!v,low);
@@ -234,7 +242,7 @@ struct wa_history {
  uint8_t *plain;size_t size;reader root,conversations;wa_slice chat;char jid[128];unsigned chat_stage;
  state_action *actions;size_t action_count,action_capacity,action_position;
  uint64_t state_version;
- int state_job,low;
+ int state_job,low,write_more;
  char delete_request[48];
  uint8_t snapshot_hash[128];
 };
@@ -446,7 +454,7 @@ static int hash_mac(uint8_t hash[128],const uint8_t value[32],int subtract){
 /* Reconstruct a write base from the server snapshot plus all authenticated
  * deltas returned with it. The receive cursor is never moved by this replay. */
 static int replay_write_snapshot(wa_history *h,const wa_storage *io,wa_slice task,char missing[129],const char **stage){
- if(number(task,112)){*stage="write-page-incomplete";return 0;}
+ h->write_more=number(task,112)!=0;
  wa_slice *records=calloc(STATE_EVENTS_MAX,sizeof *records);if(!records){*stage="write-memory";return 0;}
  wa_slice snapshot={h->plain,h->size},keyid,version_blob;
  size_t count=0;reader initial={snapshot.ptr,snapshot.len,0};unsigned f,w;uint64_t value;wa_slice record;int k,ok=0;
@@ -518,11 +526,24 @@ static int replay_write_snapshot(wa_history *h,const wa_storage *io,wa_slice tas
  int built=put_number(1,h->state_version,version,sizeof version,&vn)
   &&put_bytes(1,version,vn,plain,capacity,&n);
  for(size_t i=0;i<count&&built;i++)built=put_bytes(2,records[i].ptr,records[i].len,plain,capacity,&n);
- built=built&&put_bytes(4,keyid.ptr,keyid.len,plain,capacity,&n);
+ wa_slice id;uint8_t seal_keys[160],seal[32],stamp[8];unsigned seal_n=0;
+ big64(stamp,h->state_version);HMAC_CTX *seal_ctx=HMAC_CTX_new();
+ built=built&&bytes(keyid,1,&id)&&mutation_keys(io,id,seal_keys,missing)&&seal_ctx
+  &&HMAC_Init_ex(seal_ctx,seal_keys+96,32,EVP_sha256(),NULL)
+  &&HMAC_Update(seal_ctx,hash,sizeof hash)&&HMAC_Update(seal_ctx,stamp,8)
+  &&HMAC_Update(seal_ctx,(const uint8_t*)collection_name(h->low),strlen(collection_name(h->low)))
+  &&HMAC_Final(seal_ctx,seal,&seal_n)
+  &&put_bytes(3,seal,32,plain,capacity,&n)&&put_bytes(4,keyid.ptr,keyid.len,plain,capacity,&n);
+ HMAC_CTX_free(seal_ctx);OPENSSL_cleanse(seal_keys,sizeof seal_keys);
  if(!built){free(plain);goto done;}
  OPENSSL_cleanse(h->plain,h->size);free(h->plain);h->plain=plain;h->size=n;
  memcpy(h->snapshot_hash,hash,sizeof hash);h->action_count=0;ok=1;
  done:free(records);return ok;
+}
+int wa_history_write_more(const wa_history *h){return h&&h->write_more;}
+int wa_history_save_write_base(const wa_history *h,const wa_storage *io){
+ return h&&h->delete_request[0]&&h->size<=WA_HISTORY_NOTIFICATION_MAX
+  &&io->put(io->user,h->low?"write-base-low":"write-base-high",h->plain,h->size);
 }
 static int replace_snapshot_value(wa_slice snapshot,const uint8_t index_mac[32],uint8_t hash[128]){
  reader r={snapshot.ptr,snapshot.len,0};unsigned f,w;uint64_t v;wa_slice record,index,value;int k;
@@ -616,6 +637,11 @@ wa_history *wa_history_open_diagnostic(const wa_storage *io,const uint8_t *notif
  wa_slice s={notification,n},v;uint8_t *compressed=NULL;size_t cn=0;int allocated=0;
  uint64_t kind=number(s,101);
  if(missing)missing[0]=0;
+ if(kind==1&&bytes(s,113,&v)){
+  wa_history *h=calloc(1,sizeof *h);
+  if(!h||!state_open_checked(h,io,s,v,missing,stage)||!replay_write_snapshot(h,io,s,missing,stage)){wa_history_free(h);return NULL;}
+  return h;
+ }
  if(kind==3||(kind==2&&!bytes(s,5,&v))){
   wa_history *h=calloc(1,sizeof *h);
   if(!h||!state_open_checked(h,io,s,(wa_slice){NULL,0},missing,stage)){wa_history_free(h);return NULL;}
