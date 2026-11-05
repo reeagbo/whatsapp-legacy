@@ -133,6 +133,33 @@ int main(void) {
  assert(wa_history_done(&io,WA_HISTORY_PATCH_TASKS+1,stored,n));
  for(unsigned slot=0;slot<WA_HISTORY_PATCH_TASKS;slot++)
   assert(wa_history_done(&io,slot,inline_task,sizeof inline_task));
+ /* Pages larger than the eight-slot queue resume from the committed cursor
+  * instead of forcing a new snapshot and replaying the same oldest deltas. */
+ wa_tree *page=wa_tree_create();assert(page);
+ wa_node *page_root=wa_node_add(page,NULL,"iq"),*page_sync=wa_node_add(page,page_root,"sync");
+ wa_node *page_collection=wa_node_add(page,page_sync,"collection");
+ assert(page_collection&&wa_node_attr(page_collection,"name","regular_low"));
+ uint8_t page_data[10][4];
+ for(unsigned i=0;i<10;i++){
+  page_data[i][0]=10;page_data[i][1]=2;page_data[i][2]=8;page_data[i][3]=(uint8_t)(i+1);
+  wa_node *item=wa_node_add(page,page_collection,"patch");assert(item);
+  item->data=page_data[i];item->data_len=4;
+ }
+ assert(wa_state_collect(&io,page_root,NULL,1)==2);
+ for(unsigned slot=0;slot<WA_HISTORY_PATCH_TASKS;slot++){
+  assert(wa_history_task(&io,slot,stored,sizeof stored,&n)==1);
+  assert(wa_history_job_order(stored,n)==slot+1);
+  assert(wa_history_done(&io,slot,stored,n));
+ }
+ big64(stored_version,8);assert(io.put(io.user,version_key(1),stored_version,8));
+ assert(wa_state_collect(&io,page_root,NULL,1)==1);
+ for(unsigned slot=0;slot<2;slot++){
+  assert(wa_history_task(&io,slot,stored,sizeof stored,&n)==1);
+  assert(wa_history_job_order(stored,n)==slot+9);
+  assert(wa_history_done(&io,slot,stored,n));
+ }
+ assert(wa_history_task(&io,2,stored,sizeof stored,&n)==0);
+ assert(io.put(io.user,version_key(1),NULL,0));wa_tree_free(page);
  wa_storage_posix_close(&io);assert(!rmdir(folder));
  /* A remote chat removal carries the last included message in Unix seconds. */
  const uint8_t index[]="[\"deleteChat\",\"123456789@lid\",\"1\"]";

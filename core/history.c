@@ -164,8 +164,20 @@ int wa_state_collect(const wa_storage *io,const wa_node *result,const char *requ
   wa_node *snapshot=wa_node_child(collection,"snapshot");
   if(snapshot&&!state_task(io,snapshot,1,0,request,low))return 0;
   wa_node *patches=wa_node_child(collection,"patches");
-  for(wa_node *p=patches?patches->child:collection->child;p;p=p->next)
-   if(!strcmp(p->tag,"patch")&&!state_task(io,p,0,++fallback,NULL,low))return snapshot?2:0;
+  unsigned queued=0;
+  for(wa_node *p=patches?patches->child:collection->child;p;p=p->next){
+   if(strcmp(p->tag,"patch"))continue;
+   ++fallback;
+   wa_slice raw={p->data,p->data_len},version_field;
+   uint64_t patch_version=bytes(raw,1,&version_field)?number(version_field,1):fallback;
+   /* Recovery snapshots may be older than the durable receive cursor. Do not
+    * refill the bounded queue with already committed deltas from that page. */
+   if(patch_version&&patch_version<=wa_state_version(io,low))continue;
+   /* A partial page is backpressure, not a broken state requiring a snapshot.
+    * Once these deltas commit, the messenger asks for the remaining versions. */
+   if(!state_task(io,p,0,fallback,NULL,low))return snapshot||queued?2:0;
+   queued++;
+  }
  }
  return found?1+more:0;
 }
