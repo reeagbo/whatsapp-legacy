@@ -1,5 +1,18 @@
 # Continuidad del proyecto — 6 de noviembre de 2026
 
+## Actualización vigente: 0.36-debug (6 de noviembre)
+
+Esta sección sustituye el estado 0.35 descrito más abajo. El usuario sigue probando con un Samsung M13; su Android admite aplicaciones armeabi-v7a (32 bits). Se entregó exclusivamente ARM32.
+
+- Commit funcional: 2e7f35cb1bff58315f1df0a489327aaf84a9b935.
+- CI completo aprobado (C99, SQLite, Android, lint, unidad y emulador/instrumentación): https://github.com/reeagbo/whatsapp-legacy/actions/runs/42211043578
+- Descarga ZIP: https://github.com/reeagbo/whatsapp-legacy/actions/runs/42211043578/artifacts/13499841014
+- APK: whatsapp-legacy-0.36-debug-armeabi-v7a.apk. Instalar como actualización.
+- Revisión solicitada por inconsistencias con el principal: docs/consistency-review-0.36.md contiene hallazgos, correcciones y límites pendientes.
+- Corregidos: resumen no revierte estado de salida; notificaciones invalidan miembros y solicitan metadatos actuales; respuestas anteriores a una notificación se descartan; diálogo de información se actualiza; archivo de historial importado sin sobrescribir decisiones con timestamp.
+- Confirmados pendientes: cola de archivo/borrado no persistente y sin reintento; operaciones remotas de grupos vacíos carecen de ancla; metadatos y envío limitados a 64 miembros (96 dispositivos para envío); no se replican leído/no leído, fijado, silenciado ni preferencia de desarchivo automático. Ver informe para riesgos adicionales.
+- No hay validación nueva en cuenta real: sigue pendiente probar textos de grupo en ambos sentidos y las correcciones en el teléfono.
+
 Este documento resume el cierre de la conversación de desarrollo hasta la versión **0.35-debug**. Leer primero este archivo y AGENTS.md; después contrastar con el HEAD actual. El README y core/README.md contienen etapas antiguas y no son una descripción fiable del estado actual.
 
 ## Objetivo y forma de trabajar
