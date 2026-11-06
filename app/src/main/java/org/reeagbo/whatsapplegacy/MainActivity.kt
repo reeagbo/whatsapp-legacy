@@ -120,6 +120,11 @@ class MainActivity : Activity() {
     private var sendButton: Button? = null
     private var connected = false
     private var statusText = "Sin conexión"
+    private var creatingGroup = false
+    private fun displayedStatus() = if(creatingGroup && connected)"Creando grupo…" else statusText
+    private fun updateStatusLabel() {
+        if(::statusLabel.isInitialized)statusLabel.text=displayedStatus()
+    }
     private data class ChatChange(val peer: String, val id: String, val outgoing: Boolean, val time: Long, val changed: Long, val change: Int = 0)
     private val queuedChatChanges=java.util.ArrayDeque<ChatChange>()
     private var chatChangeInFlight=false
@@ -297,7 +302,7 @@ class MainActivity : Activity() {
             page.addView(addressLabel)
             updateAddressLabel()
         }
-        statusLabel=label(statusText,13f,muted).apply { setPadding(dp(20),dp(4),dp(16),dp(12)); setBackgroundColor(surface) }
+        statusLabel=label(displayedStatus(),13f,muted).apply { setPadding(dp(20),dp(4),dp(16),dp(12)); setBackgroundColor(surface) }
         page.addView(statusLabel)
     }
     private fun newPage() {
@@ -380,7 +385,7 @@ class MainActivity : Activity() {
             setOnClickListener { applySelectedChatChange(0) }
         },LinearLayout.LayoutParams(0,dp(52),1f))
         page.addView(actions)
-        statusLabel=label(statusText,13f,muted).apply {
+        statusLabel=label(displayedStatus(),13f,muted).apply {
             setPadding(dp(20),dp(4),dp(16),dp(12));setBackgroundColor(surface)
         }
         page.addView(statusLabel)
@@ -536,7 +541,7 @@ class MainActivity : Activity() {
                 phones.isEmpty()||phones.size>64||phones.any { !it.matches(Regex("^[1-9][0-9]{7,14}$")) } -> members.error="Añade entre 1 y 64 números internacionales válidos"
                 !connected -> Toast.makeText(this,"Esperando conexión",Toast.LENGTH_SHORT).show()
                 connection?.group(1,"",title,phones.joinToString("\n") { "$it@s.whatsapp.net" })!=true -> Toast.makeText(this,"No se pudo iniciar la creación. Inténtalo cuando termine la operación actual.",Toast.LENGTH_LONG).show()
-                else -> { dialog.dismiss();statusText="Creando grupo…";statusLabel.text=statusText }
+                else -> { dialog.dismiss();creatingGroup=true;updateStatusLabel() }
             }
         } };dialog.show()
     }
@@ -712,7 +717,11 @@ class MainActivity : Activity() {
                 "alias-conflict", "alias-storage" -> debugLog.add("CONTACT_MAPPING kind=${e[0]}")
                 "group" -> {
                     store.updateGroup(e[2],e[3],state==1,e[1]=="created")
-                    if(e[1]=="created")showChat(e[2])
+                    if(e[1]=="created") {
+                        creatingGroup=false
+                        debugLog.add("GROUP_CREATION_UI_CONFIRMED")
+                        showChat(e[2])
+                    }
                 }
                 "group-members" -> store.setGroupMembers(e[2],e[3].lineSequence().filter { it.isNotBlank() }.joinToString("\n") { line ->
                     val parts=line.split('\t');authorPeer(parts[0])+"\t"+parts.getOrElse(1){"0"}
@@ -720,13 +729,17 @@ class MainActivity : Activity() {
                 "group-left" -> store.leaveGroup(e[2])
                 "group-result" -> {
                     debugLog.add("GROUP_OPERATION_RESULT state=$state")
+                    if(creatingGroup && state!=0) {
+                        creatingGroup=false
+                        debugLog.add("GROUP_CREATION_UI_FINISHED state=$state")
+                    }
                     if(state<0)Toast.makeText(this,e[3],Toast.LENGTH_LONG).show()
                 }
                 "contact" -> if(e[2].isNotBlank()) store.learnName(e[2],e[3])
                 "notice" -> debugLog.add("MESSAGING_NOTICE state=$state detail=${e[3]}")
             }
         }
-        statusLabel.text=statusText
+        updateStatusLabel()
         refreshConversation()
         scheduleContacts()
         scheduleHistory(events.any { it.firstOrNull() in listOf("state-sync","history","ready") })
@@ -883,7 +896,7 @@ class MainActivity : Activity() {
                     }
                     val open=conversation
                     if(open!=null && !store.containsChat(open))showList() else refreshConversation()
-                    statusLabel.text=statusText;scheduleContacts(true)
+                    updateStatusLabel();scheduleContacts(true)
                     requestQueuedHistory()
                     // Process later notifications, but do not loop on a failed chunk.
                     if(errorType==null&&!stateFailed) { lastHistoryAttempt=0L;scheduleHistory() }
@@ -1015,7 +1028,8 @@ class MainActivity : Activity() {
         if (destroyed) return
         output.text = status
         statusText = status
-        if (::statusLabel.isInitialized) statusLabel.text = status
+        if(!connected)creatingGroup=false
+        updateStatusLabel()
         updateSend()
         code.text = if (pairingCode.length == 8) "${pairingCode.take(4)}-${pairingCode.takeLast(4)}" else ""
         pair.isEnabled = !busy
@@ -1030,6 +1044,7 @@ class MainActivity : Activity() {
         return File(filesDir,if(name.matches(Regex("identity-sync-[0-9a-f]{32}\\.v1")))name else "identity.v1")
     }
     private fun start(phone: String, identity: File = activeIdentity()) {
+        creatingGroup=false
         sessionGeneration++
         connection?.cancel()
         if(chatChangeInFlight) {
