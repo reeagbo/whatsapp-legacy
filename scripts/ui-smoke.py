@@ -109,6 +109,8 @@ def long_press_chat():
 
 def open_archive():
     tap(wait_for(lambda a: a.get('content-desc')=='Menú principal'))
+    wait_for(text('Archivados'))
+    if not (out/'anchored-menu.png').exists():screenshot('anchored-menu.png')
     tap(wait_for(text('Archivados')))
 
 long_press_chat()
@@ -157,22 +159,36 @@ def long_press_name(name):
     x,y=str((x1+x2)//2),str((y1+y2)//2)
     adb('shell','input','swipe',x,y,x,y,'800')
 
+# The header keeps its height and list geometry when selection starts/stops.
+wait_for(text('What!'))
+before=wait_for(desc('Abrir conversación con Lote 1')).attrib['bounds']
+normal_buttons=[wait_for(desc(label)).attrib['bounds'] for label in ('Nueva conversación','Nuevo grupo','Seleccionar todas','Menú principal')]
+assert len({tuple(re.findall(r'\d+',b))[1::2] for b in normal_buttons})==1,normal_buttons
 long_press_name('Lote 1')
-wait_for(text('1 seleccionadas'))
+wait_for(desc('1 seleccionadas'))
+assert wait_for(desc('Seleccionada: Lote 1')).attrib['bounds']==before
+selected_buttons=[wait_for(desc(label)).attrib['bounds'] for label in ('Fijar seleccionadas','Archivar seleccionadas','Eliminar seleccionadas','Seleccionar todas','Cancelar selección')]
+assert len({tuple(re.findall(r'\d+',b))[1::2] for b in selected_buttons})==1,selected_buttons
+screenshot('selection-fixed-toolbar.png')
+tap(wait_for(desc('Cancelar selección')))
+assert wait_for(desc('Abrir conversación con Lote 1')).attrib['bounds']==before
+print('PASS: What! toolbar, aligned rounded controls and no list shift on long press or cancel')
+long_press_name('Lote 1')
+wait_for(desc('1 seleccionadas'))
 tap(wait_for(desc('Seleccionar: Lote 2')))
-wait_for(text('2 seleccionadas'))
+wait_for(desc('2 seleccionadas'))
 # Android Back exits selection without opening a conversation or mutating data.
 adb('shell','input','keyevent','KEYCODE_BACK')
 wait_for(desc('Abrir conversación con Lote 1'))
 long_press_name('Lote 1')
 tap(wait_for(desc('Seleccionar todas')))
-wait_for(text('3 seleccionadas'))
+wait_for(desc('3 seleccionadas'))
 tap(wait_for(desc('Deseleccionar todas')))
 wait_for(desc('Abrir conversación con Lote 1'))
 long_press_name('Lote 1')
 tap(wait_for(desc('Seleccionar: Lote 2')))
 tap(wait_for(desc('Seleccionada: Lote 2')))
-wait_for(text('1 seleccionadas'))
+wait_for(desc('1 seleccionadas'))
 tap(wait_for(desc('Seleccionar: Lote 2')))
 screenshot('multiple-selection.png')
 tap(wait_for(desc('Archivar seleccionadas')))
@@ -186,7 +202,7 @@ wait_for(desc('Abrir conversación con Lote 2'))
 assert not any(n.attrib.get('content-desc')=='Abrir conversación con Lote 3' for n in tree().iter('node'))
 long_press_name('Lote 1')
 tap(wait_for(desc('Seleccionar todas')))
-wait_for(text('2 seleccionadas'))
+wait_for(desc('2 seleccionadas'))
 screenshot('multiple-archived.png')
 tap(wait_for(desc('Desarchivar seleccionadas')))
 wait_for(text('No hay conversaciones archivadas'))
@@ -201,23 +217,22 @@ long_press_name('Lote 1')
 tap(wait_for(desc('Seleccionar: Lote 2')))
 tap(wait_for(desc('Eliminar seleccionadas')))
 wait_for(desc('Abrir conversación con Lote 3'))
-assert not any(n.attrib.get('text') in ('1 seleccionadas','2 seleccionadas') for n in tree().iter('node'))
+assert not any(n.attrib.get('content-desc') in ('1 seleccionadas','2 seleccionadas') for n in tree().iter('node'))
 adb('shell','am','force-stop',package)
 adb('shell','am','start','-n',package+'/.MainActivity')
 wait_for(desc('Abrir conversación con Lote 3'))
 for name in ('Lote 1','Lote 2'):
     assert not any(n.attrib.get('content-desc')=='Abrir conversación con '+name for n in tree().iter('node'))
-# The menu also exposes selecting all, without a long press.
-tap(wait_for(desc('Menú principal')))
-tap(wait_for(text('Seleccionar todas')))
-wait_for(text('1 seleccionadas'))
+# The fixed toolbar exposes selecting all without a long press or a menu.
+tap(wait_for(desc('Seleccionar todas')))
+wait_for(desc('1 seleccionadas'))
 tap(wait_for(desc('Archivar seleccionadas')))
 wait_for(text('Tu primera conversación'))
 open_archive()
 long_press_name('Lote 3')
 tap(wait_for(desc('Eliminar seleccionadas')))
 wait_for(text('No hay conversaciones archivadas'))
-print('PASS: immediate scoped batch deletion, persistence, menu selection and deletion from archived list')
+print('PASS: immediate scoped batch deletion, persistence, toolbar selection and deletion from archived list')
 
 # Contact picker: exercise a real ContactsProvider record, never network discovery.
 adb('shell','input','keyevent','KEYCODE_BACK')
@@ -237,6 +252,9 @@ with tempfile.TemporaryDirectory() as folder:
         gid='120363000000001@g.us'
         db.execute('INSERT INTO chats(jid,name,updated) VALUES(?,?,?)',(gid,'',1000))
         db.execute('INSERT INTO contact_names VALUES(?,?)',(gid,'Grupo de prueba'))
+        db.execute('UPDATE chats SET pinned=700,pinned_changed=700 WHERE jid=?',(gid,))
+        db.execute('INSERT INTO chats(jid,name,updated) VALUES(?,?,?)',('120363000000002@g.us','Grupo sin fijar',900))
+        db.execute('INSERT INTO group_metadata(jid,visible) VALUES(?,1)',('120363000000002@g.us',))
         db.execute('INSERT INTO group_metadata(jid,members,left_group,visible) VALUES(?,?,0,0)',
                    (gid,'34123456789@s.whatsapp.net\t1\n'))
         db.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?)',('group-fixture',gid,'Mensaje del grupo',0,0,1000,''))
@@ -244,6 +262,9 @@ with tempfile.TemporaryDirectory() as folder:
     db.close()
     subprocess.run(['adb','shell',f"run-as {package} sh -c 'cat > databases/conversations.db'"],input=database.read_bytes(),check=True)
 adb('shell','am','start','-n',package+'/.MainActivity')
+wait_for(desc('Abrir conversación con Grupo sin fijar'))
+wait_for(desc('Grupo'))
+screenshot('group-list-pinned.png')
 tap(wait_for(lambda a:a.get('content-desc')=='Abrir conversación con Grupo de prueba'))
 wait_for(text('Mensaje del grupo'))
 wait_for(text('+34123456789'))
@@ -253,15 +274,15 @@ wait_for(text('1 participantes'))
 wait_for(text('Salir del grupo'))
 screenshot('group-info.png')
 tap(wait_for(text('Cerrar')))
-tap(wait_for(lambda a:a.get('content-desc')=='Menú principal'))
-tap(wait_for(text('Nuevo grupo')))
+tap(wait_for(desc('Volver a conversaciones')))
+tap(wait_for(desc('Nuevo grupo')))
 wait_for(text('Añadir desde la agenda'))
 # Invalid create cannot contact the service or dismiss the form.
 tap(wait_for(text('Crear')))
 wait_for(text('Nuevo grupo'))
 tap(wait_for(text('Cancelar')))
-tap(wait_for(lambda a:a.get('content-desc')=='Volver a conversaciones'))
 long_press_name('Grupo de prueba')
+tap(wait_for(desc('Seleccionar todas')))
 tap(wait_for(lambda a:a.get('content-desc')=='Eliminar seleccionadas'))
 wait_for(text('Tu primera conversación'))
 print('PASS: local agenda picker, group names, sender attribution, participant/admin list, separate leave action, create validation and group conversation deletion')

@@ -24,6 +24,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.widget.Toast
+import android.widget.PopupWindow
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -290,12 +291,37 @@ class MainActivity : Activity() {
         minWidth = dp(48); minimumWidth = dp(48); minHeight = dp(48); background = shape(Color.TRANSPARENT)
         setOnClickListener { click() }
     }
+    private var menuAnchor: View?=null
+    private var menuPopup: PopupWindow?=null
+    private fun toolbar()=LinearLayout(this).apply {
+        gravity=Gravity.CENTER_VERTICAL
+        setPadding(dp(10),dp(9),dp(10),dp(6));setBackgroundColor(surface)
+    }
+    private fun glyph(kind: String, description: String, click: () -> Unit)=GlyphView(this,kind,green,palette(R.color.wa_input)).apply {
+        contentDescription=description;isFocusable=true;isClickable=true
+        minimumWidth=dp(48);minimumHeight=dp(48)
+        setOnClickListener { click() }
+    }
+    private fun toolbarItem(bar: LinearLayout, view: View) {
+        bar.addView(view,LinearLayout.LayoutParams(dp(48),dp(52)).apply { marginStart=dp(3) })
+    }
+    private fun selectAllChats() {
+        val chats=store.chats(showingArchived)
+        if(chats.isEmpty())return
+        if(selectedChats.size==chats.size)selectedChats.clear() else selectedChats.addAll(chats.map { it.jid })
+        showList(preserveScroll=true)
+    }
     private fun header(name: String, chat: Boolean) {
-        val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(10),dp(9),dp(10),dp(6)); setBackgroundColor(surface) }
-        if (chat || showingArchived) bar.addView(action("‹", "Volver a conversaciones") { showList(chat && showingArchived) }, LinearLayout.LayoutParams(dp(48),dp(48)))
+        val bar=toolbar()
+        if (chat || showingArchived) toolbarItem(bar,glyph("back","Volver a conversaciones") { showList(chat && showingArchived) })
         bar.addView(label(name, if(chat) 21f else 26f).apply { setTypeface(null,Typeface.BOLD); maxLines=1; gravity=Gravity.CENTER_VERTICAL; if(chat) { chatTitle=this; contentDescription="Editar nombre del contacto"; setOnClickListener { conversation?.let { editName(it) } } } }, LinearLayout.LayoutParams(0,dp(52),1f).apply { gravity=Gravity.CENTER_VERTICAL })
-        if (!chat && !showingArchived) bar.addView(action("+", "Nueva conversación") { newConversation() },LinearLayout.LayoutParams(dp(52),dp(52)))
-        bar.addView(action("⋮", "Menú principal") { showMainMenu() },LinearLayout.LayoutParams(dp(48),dp(52)))
+        if (!chat && !showingArchived) {
+            toolbarItem(bar,glyph("plus","Nueva conversación") { newConversation() })
+            toolbarItem(bar,glyph("group","Nuevo grupo") { newGroup() })
+        }
+        if(!chat)toolbarItem(bar,glyph("select","Seleccionar todas") { selectAllChats() }.apply { isEnabled=store.chats(showingArchived).isNotEmpty() })
+        val menu=glyph("menu","Menú principal") { showMainMenu() }
+        menuAnchor=menu;toolbarItem(bar,menu)
         page.addView(bar)
         if(chat) {
             addressLabel=label("",12f,muted).apply { setPadding(dp(20),0,dp(16),dp(5));setBackgroundColor(surface) }
@@ -306,6 +332,7 @@ class MainActivity : Activity() {
         page.addView(statusLabel)
     }
     private fun newPage() {
+        menuPopup?.dismiss();menuPopup=null;menuAnchor=null
         chatTitle=null;addressLabel=null
         page=column().apply { setBackgroundColor(canvas) }
         setContentView(page)
@@ -330,7 +357,7 @@ class MainActivity : Activity() {
         queuedHistoryPeer=null
         conversation=null; renderedMessages=emptyList(); messageList=null; messageScroll=null; compose=null; sendButton=null
         newPage()
-        if(selectedChats.isEmpty())header(if(archived)"Archivados" else "Conversaciones",false)
+        if(selectedChats.isEmpty())header(if(archived)"Archivados" else "What!",false)
         else selectionHeader(chats)
         val rows=column().apply { setPadding(dp(12),dp(10),dp(12),dp(10)) }
         if(chats.isEmpty()) rows.addView(column().apply {
@@ -341,8 +368,11 @@ class MainActivity : Activity() {
         for(chat in chats) {
             traceIdentity(chat)
             val name=contactName(chat)
-            val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); background=shape(if(chat.jid in selectedChats)outgoingSurface else surface,18); minimumHeight=dp(80); isClickable=true; isSelected=chat.jid in selectedChats; contentDescription=if(selectedChats.isEmpty())"Abrir conversación con $name" else if(isSelected)"Seleccionada: $name" else "Seleccionar: $name" }
-            row.addView(label(if(chat.jid in selectedChats)"✓" else name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),28) },LinearLayout.LayoutParams(dp(52),dp(52)))
+            val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); background=shape(if(chat.jid in selectedChats)outgoingSurface else if(chat.pinned>0)palette(R.color.wa_pinned) else surface,18); minimumHeight=dp(80); isClickable=true; isSelected=chat.jid in selectedChats; contentDescription=if(selectedChats.isEmpty())"Abrir conversación con $name" else if(isSelected)"Seleccionada: $name" else "Seleccionar: $name" }
+            val avatar=if(chat.jid.endsWith("@g.us") && chat.jid !in selectedChats)
+                GlyphView(this,"group",green,palette(R.color.wa_avatar),26f).apply { contentDescription="Grupo" }
+            else label(if(chat.jid in selectedChats)"✓" else name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),28) }
+            row.addView(avatar,LinearLayout.LayoutParams(dp(52),dp(52)))
             row.addView(column().apply {
                 setPadding(dp(14),0,dp(8),0)
                 addView(label((if(chat.pinned>0)"📌 " else "")+name,18f).apply { setTypeface(null,Typeface.BOLD); setSingleLine(true) })
@@ -367,38 +397,19 @@ class MainActivity : Activity() {
         showList(preserveScroll=true)
     }
     private fun selectionHeader(chats: List<ChatStore.Chat>) {
-        val bar=LinearLayout(this).apply {
-            gravity=Gravity.CENTER_VERTICAL
-            setPadding(dp(10),dp(9),dp(10),dp(6));setBackgroundColor(surface)
-        }
-        bar.addView(action("×","Cancelar selección") { clearChatSelection() },LinearLayout.LayoutParams(dp(48),dp(52)))
-        bar.addView(label("${selectedChats.size} seleccionadas",20f).apply {
-            setTypeface(null,Typeface.BOLD);setSingleLine(true)
+        val bar=toolbar()
+        bar.addView(label("${selectedChats.size}",20f).apply {
+            contentDescription="${selectedChats.size} seleccionadas"
+            setTypeface(null,Typeface.BOLD);setSingleLine(true);gravity=Gravity.CENTER_VERTICAL
         },LinearLayout.LayoutParams(0,dp(52),1f))
-        val allSelected=selectedChats.size==chats.size
-        bar.addView(action("☑",if(allSelected)"Deseleccionar todas" else "Seleccionar todas") {
-            if(allSelected)selectedChats.clear() else selectedChats.addAll(chats.map { it.jid })
-            showList(preserveScroll=true)
-        },LinearLayout.LayoutParams(dp(52),dp(52)))
-        page.addView(bar)
-        val actions=LinearLayout(this).apply {
-            setPadding(dp(12),0,dp(12),dp(8));setBackgroundColor(surface)
-        }
         val unpin=chats.filter { it.jid in selectedChats }.all { it.pinned>0 }
-        actions.addView(Button(this).apply {
-            text=if(unpin)"Desfijar" else "Fijar"
-            setOnClickListener { applySelectedChatChange(if(unpin)4 else 3) }
-        },LinearLayout.LayoutParams(0,dp(52),1f))
-        val archiveLabel=if(showingArchived)"Desarchivar" else "Archivar"
-        actions.addView(Button(this).apply {
-            text=archiveLabel;contentDescription="$archiveLabel seleccionadas"
-            setOnClickListener { applySelectedChatChange(if(showingArchived)2 else 1) }
-        },LinearLayout.LayoutParams(0,dp(52),1f))
-        actions.addView(Button(this).apply {
-            text="Eliminar";contentDescription="Eliminar seleccionadas"
-            setOnClickListener { applySelectedChatChange(0) }
-        },LinearLayout.LayoutParams(0,dp(52),1f))
-        page.addView(actions)
+        toolbarItem(bar,glyph(if(unpin)"unpin" else "pin",if(unpin)"Desfijar seleccionadas" else "Fijar seleccionadas") { applySelectedChatChange(if(unpin)4 else 3) })
+        toolbarItem(bar,glyph(if(showingArchived)"unarchive" else "archive",if(showingArchived)"Desarchivar seleccionadas" else "Archivar seleccionadas") { applySelectedChatChange(if(showingArchived)2 else 1) })
+        toolbarItem(bar,glyph("delete","Eliminar seleccionadas") { applySelectedChatChange(0) })
+        val allSelected=selectedChats.size==chats.size
+        toolbarItem(bar,glyph(if(allSelected)"deselect" else "select",if(allSelected)"Deseleccionar todas" else "Seleccionar todas") { selectAllChats() })
+        toolbarItem(bar,glyph("cancel","Cancelar selección") { clearChatSelection() })
+        page.addView(bar)
         statusLabel=label(displayedStatus(),13f,muted).apply {
             setPadding(dp(20),dp(4),dp(16),dp(12));setBackgroundColor(surface)
         }
@@ -972,36 +983,34 @@ class MainActivity : Activity() {
         render("Sin conexión · No se pudieron guardar los mensajes. Revisa el espacio disponible. Los recibidos pendientes se conservan.","",false)
     }
     private fun showMainMenu() {
-        val rows=column().apply { setPadding(dp(14),dp(8),dp(14),dp(14));setBackgroundColor(canvas) }
-        val dialog=AlertDialog.Builder(this).setTitle("Menú").setView(rows).create()
-        fun item(title: String, detail: String, run: () -> Unit) {
-            rows.addView(column().apply {
-                background=shape(surface,16)
-                setPadding(dp(16),dp(11),dp(16),dp(11))
-                addView(label(title,17f).apply { setTypeface(null,Typeface.BOLD) })
-                addView(label(detail,13f,muted))
-                isFocusable=true
-                setOnClickListener { dialog.dismiss();run() }
-            },LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(6) })
+        val anchor=menuAnchor ?: return
+        menuPopup?.dismiss()
+        val rows=column().apply { setPadding(dp(6),dp(6),dp(6),dp(6)) }
+        val width=minOf(dp(250),resources.displayMetrics.widthPixels-dp(24))
+        val popup=PopupWindow(rows,width,ViewGroup.LayoutParams.WRAP_CONTENT,true).apply {
+            setBackgroundDrawable(shape(surface,12));isOutsideTouchable=true
+            if(Build.VERSION.SDK_INT>=21)elevation=dp(8).toFloat()
+        }
+        menuPopup=popup
+        fun item(title: String, badge: String = "", run: () -> Unit) {
+            rows.addView(LinearLayout(this).apply {
+                gravity=Gravity.CENTER_VERTICAL;minimumHeight=dp(48)
+                setPadding(dp(14),dp(10),dp(14),dp(10));background=shape(surface,8)
+                addView(label(title,16f),LinearLayout.LayoutParams(0,-2,1f))
+                if(badge.isNotEmpty())addView(label(badge,14f,muted))
+                isFocusable=true;isClickable=true
+                setOnClickListener { popup.dismiss();run() }
+            },LinearLayout.LayoutParams(-1,-2))
         }
         conversation?.let { jid ->
-            item("Opciones de conversación","Archivar, editar o eliminar") { chatActions(jid) }
-            if(jid.endsWith("@g.us"))item("Información del grupo","Participantes y salir del grupo") { groupInfo(jid) }
+            item("Opciones de conversación") { chatActions(jid) }
+            if(jid.endsWith("@g.us"))item("Información del grupo") { groupInfo(jid) }
         }
-        item("Nuevo grupo","Crear un grupo de texto con contactos o números") { newGroup() }
-        if(conversation==null && store.chats(showingArchived).isNotEmpty())
-            item("Seleccionar todas","Archivar o eliminar varias conversaciones") {
-                selectedChats.addAll(store.chats(showingArchived).map { it.jid })
-                showList(preserveScroll=true)
-            }
-        if(showingArchived) item("Conversaciones","Volver a la lista principal") { showList(false) }
-        else {
-            val count=store.chats(true).size
-            item("Archivados",if(count==1)"1 conversación archivada" else "$count conversaciones archivadas") { showList(true) }
-        }
-        item("Vinculación","Dispositivo vinculado y estado de conexión") { showSettings() }
-        item("Diagnóstico","Controles de conexión y registro") { showDiagnostics() }
-        dialog.show()
+        if(showingArchived)item("What!") { showList(false) }
+        else item("Archivados",store.chats(true).size.toString()) { showList(true) }
+        item("Vinculación") { showSettings() }
+        item("Diagnóstico") { showDiagnostics() }
+        popup.showAsDropDown(anchor,anchor.width-width,dp(4))
     }
     private fun showDiagnostics() {
         val tools=column()
@@ -1412,6 +1421,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        menuPopup?.dismiss();menuPopup=null
         debugLog.add("APP_DESTROY changing_configuration=$isChangingConfigurations")
         if (Thread.getDefaultUncaughtExceptionHandler() === crashHandler) Thread.setDefaultUncaughtExceptionHandler(oldCrashHandler)
         destroyed = true

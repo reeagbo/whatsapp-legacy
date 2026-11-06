@@ -71,7 +71,7 @@ jobs:
           from pathlib import Path
           import shutil
           import zipfile
-          apk = Path('app/build/outputs/apk/debug/whatsapp-legacy-0.40-debug-armeabi-v7a.apk')
+          apk = Path('app/build/outputs/apk/debug/whatsapp-legacy-0.41-debug-armeabi-v7a.apk')
           with zipfile.ZipFile(apk) as package:
               abis = {name.split('/')[1] for name in package.namelist() if name.startswith('lib/') and name.endswith('.so')}
               assert abis == {'armeabi-v7a'}, abis
@@ -95,7 +95,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: |
-            adb install app/build/outputs/apk/debug/whatsapp-legacy-0.40-debug-x86_64.apk
+            adb install app/build/outputs/apk/debug/whatsapp-legacy-0.41-debug-x86_64.apk
             python scripts/ui-smoke.py
             adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
             python scripts/check-group-creation-ui.py
@@ -108,7 +108,7 @@ jobs:
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
-          name: whatsapp-legacy-0.40-debug-armeabi-v7a
+          name: whatsapp-legacy-0.41-debug-armeabi-v7a
           path: delivery/whatsapp-legacy-*.apk
           if-no-files-found: error
           retention-days: 30
