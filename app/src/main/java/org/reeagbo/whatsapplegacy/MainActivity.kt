@@ -204,9 +204,10 @@ class MainActivity : Activity() {
     }
     private fun title(jid: String) = store.chat(jid)?.let { contactName(it) } ?: phoneNames[jid] ?: display(jid)
     private fun refreshConversation() {
+        if(menuPopup?.isShowing==true) { deferredMenuRefresh=true;return }
         store.chats().forEach { traceIdentity(it) }
         val current = conversation
-        if (current == null) showList() else {
+        if (current == null) showList(preserveScroll=true) else {
             conversation = store.resolve(current)
             chatTitle?.text = title(conversation!!)
             updateAddressLabel()
@@ -293,6 +294,7 @@ class MainActivity : Activity() {
     }
     private var menuAnchor: View?=null
     private var menuPopup: PopupWindow?=null
+    private var deferredMenuRefresh=false
     private fun toolbar()=LinearLayout(this).apply {
         gravity=Gravity.CENTER_VERTICAL
         setPadding(dp(10),dp(9),dp(10),dp(6));setBackgroundColor(surface)
@@ -992,6 +994,13 @@ class MainActivity : Activity() {
             if(Build.VERSION.SDK_INT>=21)elevation=dp(8).toFloat()
         }
         menuPopup=popup
+        popup.setOnDismissListener {
+            if(menuPopup===popup)menuPopup=null
+            if(deferredMenuRefresh) {
+                deferredMenuRefresh=false
+                handler.post { if(!destroyed)refreshConversation() }
+            }
+        }
         fun item(title: String, badge: String = "", run: () -> Unit) {
             rows.addView(LinearLayout(this).apply {
                 gravity=Gravity.CENTER_VERTICAL;minimumHeight=dp(48)
