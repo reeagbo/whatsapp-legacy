@@ -12,7 +12,17 @@ fi
 if [ ! -d native-deps/openssl-source ]; then
   git clone --depth 1 --branch openssl-3.0.18 https://github.com/openssl/openssl.git native-deps/openssl-source
 fi
-for abi in armeabi-v7a arm64-v8a x86_64; do
+# Default to the architecture currently distributed to phones.
+# CI explicitly supplies x86_64 as well for its emulator-only build.
+abis=("$@")
+if [ "${#abis[@]}" -eq 0 ]; then abis=(arm64-v8a); fi
+for abi in "${abis[@]}"; do
+  case "$abi" in
+    armeabi-v7a|arm64-v8a|x86_64) ;;
+    *) echo "Unsupported ABI: $abi" >&2; exit 1 ;;
+  esac
+done
+for abi in "${abis[@]}"; do
   case "$abi" in
     armeabi-v7a) target=android-arm;;
     arm64-v8a) target=android-arm64;;

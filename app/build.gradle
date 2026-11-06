@@ -1,4 +1,8 @@
 plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+def targetAbi = providers.gradleProperty('targetAbi').getOrElse('arm64-v8a')
+if (!(targetAbi in ['armeabi-v7a', 'arm64-v8a', 'x86_64'])) {
+    throw new GradleException("Unsupported targetAbi: ${targetAbi}")
+}
 android {
     namespace 'org.reeagbo.whatsapplegacy'
     compileSdk 35
@@ -7,9 +11,9 @@ android {
         applicationId 'org.reeagbo.whatsapplegacy'
         minSdk 21
         targetSdk 35
-        versionCode 30
-        versionName '0.30-debug'
-        ndk { abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64' }
+        versionCode 31
+        versionName '0.31-debug'
+        ndk { abiFilters targetAbi }
         externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_static' } }
     }
     externalNativeBuild { cmake { path file('src/main/cpp/CMakeLists.txt'); version '3.22.1' } }
@@ -29,5 +33,5 @@ android {
 dependencies { implementation 'com.squareup.okhttp3:okhttp:4.12.0'; testImplementation 'junit:junit:4.13.2' }
 
 android.applicationVariants.all { variant ->
-    variant.outputs.all { outputFileName = "whatsapp-legacy-${variant.versionName}.apk" }
+    variant.outputs.all { outputFileName = "whatsapp-legacy-${variant.versionName}-${targetAbi}.apk" }
 }
