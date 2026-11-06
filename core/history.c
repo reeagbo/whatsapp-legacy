@@ -275,6 +275,8 @@ static int add_action(wa_history *h,wa_slice index,wa_slice action) {
  strcpy(record.jid,parts[1]);
  if(h->low&&!strcmp(parts[0],"archive")&&bytes(action,17,&operation)) {
   strcpy(record.kind,"archive");record.outgoing=number(operation,1)!=0;
+ }else if(h->low&&!strcmp(parts[0],"pin_v1")&&bytes(action,5,&operation)) {
+  strcpy(record.kind,"pin");record.outgoing=number(operation,1)!=0;
  }else if(h->low)return 1;
  else if(!strcmp(parts[0],"deleteMessageForMe")&&bytes(action,18,&operation)) {
   if(!parts[2][0]||strlen(parts[2])>=sizeof record.id||(strcmp(parts[3],"0")&&strcmp(parts[3],"1")))return 1;
@@ -578,25 +580,27 @@ static int replace_snapshot_value(wa_slice snapshot,const uint8_t index_mac[32],
 }
 wa_tree *wa_history_delete_patch(const wa_history *h,const wa_storage *io,const char *iq_id,
  const char *peer,const char *anchor,int own,uint64_t time,uint64_t changed,int archive){
- if(!h||!h->delete_request[0]||!address(peer)||!anchor||!*anchor||strlen(anchor)>=96||
-    !time||!changed||h->state_version<wa_state_version(io,h->low)||h->state_version>=UINT32_MAX)return NULL;
+ int pin=archive>=3;
+ if(!h||!h->delete_request[0]||!address(peer)||(!pin&&(!anchor||!*anchor||strlen(anchor)>=96||!time))||
+    !changed||h->state_version<wa_state_version(io,h->low)||h->state_version>=UINT32_MAX)return NULL;
  wa_slice snapshot={h->plain,h->size},key_id,key;
  if(!bytes(snapshot,4,&key_id)||!bytes(key_id,1,&key))return NULL;
  const char *collection_name_value=collection_name(h->low);
  uint8_t keys[160],message_key[256],message[300],range[340],operation[360],action[400],plain[580];
  size_t kn=0,mn=0,rn=0,on=0,an=0,pn=0;
- char index[170];int il=snprintf(index,sizeof index,h->low?"[\"archive\",\"%s\"]":"[\"deleteChat\",\"%s\",\"1\"]",peer);
+ char index[170];int il=snprintf(index,sizeof index,pin?"[\"pin_v1\",\"%s\"]":h->low?"[\"archive\",\"%s\"]":"[\"deleteChat\",\"%s\",\"1\"]",peer);
  int ok=il>0&&(size_t)il<sizeof index&&
-  put_bytes(1,(const uint8_t*)peer,strlen(peer),message_key,sizeof message_key,&kn)&&
+  (pin|| (put_bytes(1,(const uint8_t*)peer,strlen(peer),message_key,sizeof message_key,&kn)&&
   put_number(2,own!=0,message_key,sizeof message_key,&kn)&&
   put_bytes(3,(const uint8_t*)anchor,strlen(anchor),message_key,sizeof message_key,&kn)&&
   put_bytes(1,message_key,kn,message,sizeof message,&mn)&&put_number(2,time/1000,message,sizeof message,&mn)&&
   put_number(1,time/1000,range,sizeof range,&rn)&&put_bytes(3,message,mn,range,sizeof range,&rn)&&
   (!h->low||put_number(1,archive!=0,operation,sizeof operation,&on))&&
-  put_bytes(h->low?2:1,range,rn,operation,sizeof operation,&on)&&put_number(1,changed,action,sizeof action,&an)&&
-  put_bytes(h->low?17:22,operation,on,action,sizeof action,&an)&&
+  put_bytes(h->low?2:1,range,rn,operation,sizeof operation,&on)))&&
+  (!pin||put_number(1,archive==3,operation,sizeof operation,&on))&&put_number(1,changed,action,sizeof action,&an)&&
+  put_bytes(pin?5:h->low?17:22,operation,on,action,sizeof action,&an)&&
   put_bytes(1,(const uint8_t*)index,(size_t)il,plain,sizeof plain,&pn)&&
-  put_bytes(2,action,an,plain,sizeof plain,&pn)&&put_number(4,h->low?3:6,plain,sizeof plain,&pn)&&
+  put_bytes(2,action,an,plain,sizeof plain,&pn)&&put_number(4,pin?5:h->low?3:6,plain,sizeof plain,&pn)&&
   mutation_keys(io,key,keys,NULL);
  uint8_t value[sizeof plain+64],mac_input[sizeof value+73],mac[64],index_mac[32];
  unsigned mac_len=0;int a=0,b=0;
@@ -830,6 +834,11 @@ int wa_history_next(wa_history *h,wa_message_event *e,uint64_t *time){if(!h||!e|
    if(h->chat_stage==2){h->chat_stage++;
     unsigned f,w;wa_slice b;uint64_t v;reader fields={h->chat.ptr,h->chat.len,0};int k;
     while((k=next(&fields,&f,&w,&b,&v))>0)if(f==16&&w==0){strcpy(e->kind,"history-archive");strcpy(e->jid,h->jid);e->state=v!=0;return 1;}
+    if(k<0)return -1;
+   }
+   if(h->chat_stage==3){h->chat_stage++;
+    unsigned f,w;wa_slice b;uint64_t v;reader fields={h->chat.ptr,h->chat.len,0};int k;
+    while((k=next(&fields,&f,&w,&b,&v))>0)if(f==24&&w==0){strcpy(e->kind,"history-pin");strcpy(e->jid,h->jid);snprintf(e->text,sizeof e->text,"%llu",(unsigned long long)v);return 1;}
     if(k<0)return -1;
    }
    unsigned f,w;wa_slice b;uint64_t v;int k;

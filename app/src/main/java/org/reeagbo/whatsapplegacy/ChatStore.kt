@@ -6,8 +6,8 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
 /** Android conversation storage. Protocol/Signal state belongs to the C core. */
-class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 7) {
-    data class Chat(val jid: String, val name: String, val preview: String, val time: Long, val pushName: String, val archived: Boolean)
+class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 8) {
+    data class Chat(val jid: String, val name: String, val preview: String, val time: Long, val pushName: String, val archived: Boolean, val pinned: Long = 0)
     data class Message(val id: String, val peer: String, val text: String, val outgoing: Boolean,
                        val status: Int, val time: Long, val note: String, val author: String = "")
     override fun onConfigure(db: SQLiteDatabase) {
@@ -22,6 +22,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         addArchiveColumn(db)
         addArchiveTimestamp(db)
         createGroups(db)
+        addPinned(db)
     }
     private fun createMessages(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE messages(id TEXT NOT NULL, peer TEXT NOT NULL REFERENCES chats(jid), text TEXT NOT NULL, outgoing INTEGER NOT NULL, status INTEGER NOT NULL, time INTEGER NOT NULL, note TEXT NOT NULL, PRIMARY KEY(peer,id,outgoing))")
@@ -42,6 +43,10 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
     private fun addArchiveTimestamp(db: SQLiteDatabase) {
         db.execSQL("ALTER TABLE chats ADD COLUMN archived_changed INTEGER NOT NULL DEFAULT 0")
     }
+    private fun addPinned(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE chats ADD COLUMN pinned_changed INTEGER NOT NULL DEFAULT 0")
+    }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
             // SQLiteOpenHelper wraps the migration in one transaction.
@@ -56,6 +61,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         if (oldVersion < 5) addArchiveColumn(db)
         if (oldVersion < 6) addArchiveTimestamp(db)
         if (oldVersion < 7) createGroups(db)
+        if (oldVersion < 8) addPinned(db)
     }
     fun addChat(address: String, name: String = "", updated: Long = System.currentTimeMillis()) {
         val jid = resolve(address)
@@ -83,10 +89,20 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         addChat(peer,updated=0)
         writableDatabase.execSQL("UPDATE chats SET archived=? WHERE jid=? AND archived_changed=0",arrayOf(if(archived)1 else 0,peer))
     }
+    fun setPinned(jid: String, pinned: Long, changed: Long) = historyTransaction {
+        val peer=resolve(jid)
+        addChat(peer,updated=0)
+        writableDatabase.execSQL("UPDATE chats SET pinned=?,pinned_changed=? WHERE jid=? AND pinned_changed<=?",arrayOf(pinned,changed,peer,changed))
+    }
+    fun historyPinned(jid: String, pinned: Long) = historyTransaction {
+        val peer=resolve(jid)
+        addChat(peer,updated=0)
+        writableDatabase.execSQL("UPDATE chats SET pinned=? WHERE jid=? AND pinned_changed=0",arrayOf(pinned,peer))
+    }
     fun chat(jid: String): Chat? = queryChats(resolve(jid)).firstOrNull()
     private fun queryChats(jid: String?, archived: Boolean? = null): List<Chat> = readableDatabase.rawQuery(
-        "SELECT c.jid,c.name,COALESCE((SELECT text FROM messages m WHERE m.peer=c.jid ORDER BY time DESC,rowid DESC LIMIT 1),''),c.updated,COALESCE((SELECT name FROM contact_names n WHERE n.jid=c.jid),''),c.archived FROM chats c WHERE (?='' AND (CAST(? AS INTEGER) IN (-1,c.archived)) AND (EXISTS(SELECT 1 FROM messages m WHERE m.peer=c.jid) OR EXISTS(SELECT 1 FROM group_metadata g WHERE g.jid=c.jid AND g.visible=1))) OR c.jid=? ORDER BY c.updated DESC", arrayOf(jid.orEmpty(),when(archived) { true -> "1"; false -> "0"; null -> "-1" },jid.orEmpty())
-    ).use { c -> buildList { while (c.moveToNext()) add(Chat(c.getString(0), c.getString(1), c.getString(2), c.getLong(3), c.getString(4), c.getInt(5)!=0)) } }
+        "SELECT c.jid,c.name,COALESCE((SELECT text FROM messages m WHERE m.peer=c.jid ORDER BY time DESC,rowid DESC LIMIT 1),''),c.updated,COALESCE((SELECT name FROM contact_names n WHERE n.jid=c.jid),''),c.archived,c.pinned FROM chats c WHERE (?='' AND (CAST(? AS INTEGER) IN (-1,c.archived)) AND (EXISTS(SELECT 1 FROM messages m WHERE m.peer=c.jid) OR EXISTS(SELECT 1 FROM group_metadata g WHERE g.jid=c.jid AND g.visible=1))) OR c.jid=? ORDER BY c.pinned DESC,c.updated DESC,c.jid ASC", arrayOf(jid.orEmpty(),when(archived) { true -> "1"; false -> "0"; null -> "-1" },jid.orEmpty())
+    ).use { c -> buildList { while (c.moveToNext()) add(Chat(c.getString(0), c.getString(1), c.getString(2), c.getLong(3), c.getString(4), c.getInt(5)!=0,c.getLong(6))) } }
     fun messages(jid: String, limit: Int = 100): List<Message> = readableDatabase.rawQuery(
         "SELECT id,peer,text,outgoing,status,time,note,COALESCE((SELECT author FROM message_authors a WHERE a.peer=messages.peer AND a.id=messages.id AND a.outgoing=messages.outgoing),'') FROM messages WHERE peer=? ORDER BY time DESC,id DESC,outgoing DESC LIMIT ?", arrayOf(resolve(jid),limit.coerceIn(1,5000).toString())
     ).use { c -> buildList { while (c.moveToNext()) add(Message(c.getString(0),c.getString(1),c.getString(2),c.getInt(3)!=0,c.getInt(4),c.getLong(5),c.getString(6),c.getString(7))) }.reversed() }
@@ -138,7 +154,9 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         db.beginTransaction()
         try { block();db.setTransactionSuccessful() } finally { db.endTransaction() }
     }
-    fun historyChat(jid: String, name: String) {
+    fun historyChat(jid: String, name: String, time: Long = 0) {
+        addChat(jid,updated=time)
+        writableDatabase.execSQL("UPDATE chats SET updated=MAX(updated,?) WHERE jid=?",arrayOf(time,resolve(jid)))
         if(name.isNotBlank())learnName(jid,name)
     }
     fun historyAnchor(jid: String): Message? = readableDatabase.rawQuery(
@@ -253,6 +271,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
             if (previous != lid) { db.setTransactionSuccessful(); return previous == pn }
             db.execSQL("INSERT INTO aliases(lid,pn) VALUES(?,?)", arrayOf(lid,pn))
             db.execSQL("INSERT OR IGNORE INTO chats(jid,name,updated,archived,archived_changed) SELECT ?,name,updated,archived,archived_changed FROM chats WHERE jid=?", arrayOf(pn,lid))
+            db.execSQL("UPDATE chats SET pinned=CASE WHEN (SELECT pinned_changed FROM chats WHERE jid=?)>pinned_changed OR (pinned_changed=0 AND (SELECT pinned_changed FROM chats WHERE jid=?)=0 AND (SELECT pinned FROM chats WHERE jid=?)>pinned) THEN (SELECT pinned FROM chats WHERE jid=?) ELSE pinned END,pinned_changed=MAX(pinned_changed,COALESCE((SELECT pinned_changed FROM chats WHERE jid=?),0)) WHERE jid=?",arrayOf(lid,lid,lid,lid,lid,pn))
             db.execSQL("UPDATE chats SET name=CASE WHEN name='' THEN COALESCE((SELECT name FROM chats WHERE jid=?),'') ELSE name END,updated=MAX(updated,COALESCE((SELECT updated FROM chats WHERE jid=?),updated)),archived=CASE WHEN COALESCE((SELECT archived_changed FROM chats WHERE jid=?),-1)>archived_changed THEN (SELECT archived FROM chats WHERE jid=?) WHEN archived_changed=0 THEN MAX(archived,COALESCE((SELECT archived FROM chats WHERE jid=? AND archived_changed=0),0)) ELSE archived END,archived_changed=MAX(archived_changed,COALESCE((SELECT archived_changed FROM chats WHERE jid=?),0)) WHERE jid=?", arrayOf(lid,lid,lid,lid,lid,lid,pn))
             db.execSQL("INSERT OR IGNORE INTO message_mutations(peer,id,outgoing,kind,changed,text) SELECT ?,id,outgoing,kind,changed,text FROM message_mutations WHERE peer=?",arrayOf(pn,lid))
             db.execSQL("INSERT OR REPLACE INTO message_mutations(peer,id,outgoing,kind,changed,text) SELECT ?,old.id,old.outgoing,old.kind,old.changed,old.text FROM message_mutations old JOIN message_mutations current ON current.peer=? AND current.id=old.id AND current.outgoing=old.outgoing WHERE old.peer=? AND current.kind!='delete' AND (old.kind='delete' OR old.changed>current.changed)",arrayOf(pn,pn,lid))

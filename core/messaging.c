@@ -428,13 +428,13 @@ static int incoming(wa_messenger *m,const wa_node *node){
  return ok;
 }
 static void delete_result(wa_messenger *m,int state){
- event(m,"delete-result",m->delete_id,"",m->chat_change==1?"archive":m->chat_change==2?"unarchive":"delete",state);
+ event(m,"delete-result",m->delete_id,"",m->chat_change==1?"archive":m->chat_change==2?"unarchive":m->chat_change==3?"pin":m->chat_change==4?"unpin":"delete",state);
  m->delete_id[0]=0;m->delete_snapshot[0]=0;m->delete_deadline=0;
 }
 int wa_messenger_delete_chat(wa_messenger *m,const char *peer,const char *anchor,int own,uint64_t time,uint64_t changed,int change){
  char jid[128];uint8_t nonce[12];
- if(!m||!m->ready||m->delete_id[0]||!base(peer,jid)||!anchor||!*anchor||strlen(anchor)>=96||
-    !time||!changed||change<0||change>2||RAND_bytes(nonce,sizeof nonce)!=1)return 0;
+ if(!m||!m->ready||m->delete_id[0]||!base(peer,jid)||!anchor||(change<3&&(!*anchor||strlen(anchor)>=96||!time))||
+    !changed||change<0||change>4||RAND_bytes(nonce,sizeof nonce)!=1)return 0;
  char token[25];for(size_t i=0;i<sizeof nonce;i++)snprintf(token+i*2,3,"%02x",nonce[i]);
  snprintf(m->delete_id,sizeof m->delete_id,"legacy-delete-%s",token);
  snprintf(m->delete_snapshot,sizeof m->delete_snapshot,"legacy-snap-%s",token);
@@ -454,7 +454,7 @@ void wa_messenger_delete_snapshot(wa_messenger *m,const struct wa_history *h){
  }
  m->delete_snapshot[0]=0;
  wa_tree *patch=wa_history_delete_patch(h,&m->io,m->delete_id,m->delete_peer,m->delete_anchor,
-    m->delete_own,m->delete_time,m->delete_changed,m->chat_change==1);
+    m->delete_own,m->delete_time,m->delete_changed,m->chat_change>=3?m->chat_change:m->chat_change==1);
  if(!patch){delete_result(m,-7);return;}
  if(!send(m,patch))delete_result(m,-1);
 }

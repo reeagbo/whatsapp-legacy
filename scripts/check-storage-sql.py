@@ -68,10 +68,10 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     # Exercise every production merge statement, with bound arguments in source order.
     merge = literals(source.split('fun link(',1)[1].split('fun interrupted()',1)[0])
     lid,pn='123456789@lid','34123456789@s.whatsapp.net'
-    args=[(lid,pn),(pn,lid),(lid,lid,lid,lid,lid,lid,pn),(pn,lid),(pn,pn,lid),(pn,lid),(lid,lid,lid,pn),
+    args=[(lid,pn),(pn,lid),(lid,lid,lid,lid,lid,pn),(lid,lid,lid,lid,lid,lid,pn),(pn,lid),(pn,pn,lid),(pn,lid),(lid,lid,lid,pn),
           (pn,lid),(lid,pn),(pn,),(lid,),(lid,),(lid,),(lid,),(lid,),
           (pn,),(pn,),(pn,pn,pn),(pn,lid),(lid,)]
-    assert len(merge)==len(args)==20
+    assert len(merge)==len(args)==21
     path=Path(folder)/'merge.db'
     db=sqlite3.connect(path);db.execute('PRAGMA foreign_keys=ON')
     for sql in [chats]+new_schema+contact_schema+sync_schema+archive_schema+group_schema: db.execute(sql)
@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     for sql,bound in zip(merge,args): db.execute(sql,bound)
     db.commit();db.close()
     db=sqlite3.connect(path);db.execute('PRAGMA foreign_keys=ON')
-    assert db.execute('SELECT * FROM chats').fetchall()==[(pn,'Nombre manual',200,1,0)]
+    assert db.execute('SELECT * FROM chats').fetchall()==[(pn,'Nombre manual',200,1,0,0,0)]
     assert db.execute('SELECT pn FROM aliases WHERE lid=?',(lid,)).fetchone()==(pn,)
     assert db.execute('SELECT name FROM contact_names WHERE jid=?',(pn,)).fetchone()==('Nombre recibido',)
     assert db.execute('SELECT COUNT(*) FROM messages').fetchone()[0]==3
@@ -182,3 +182,19 @@ message_query=re.search(r'"(SELECT id,peer,text,outgoing,status,time,note,COALES
 assert db.execute(message_query,('120363000000001@g.us','100')).fetchone()[7]=='34123456789@s.whatsapp.net'
 print('PASS: v6 -> v7 group/author migration, transactional rollback and original message preservation')
 print('PASS: v1–v5 upgrades to v6, rollback, reopen, Unicode, peer/direction dedup, receipt attribution, alias merges, archive filtering and persistent deletion markers. No compilation performed.')
+
+# Version 7 -> 8 preserves messages and sorts pins ahead of newer activity.
+db=sqlite3.connect(':memory:')
+for sql in [chats]+new_schema+contact_schema+sync_schema+archive_schema[:2]+group_schema: db.execute(sql)
+db.execute("INSERT INTO chats(jid,name,updated) VALUES('old','',100),('new','',300),('pin','',50)")
+for sql in archive_schema[2:]:db.execute(sql)
+for jid in ('old','new','pin'):db.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?)',(jid,jid,'text',0,0,1,''))
+db.execute("UPDATE chats SET pinned=200,pinned_changed=200 WHERE jid='pin'")
+query=re.search(r'"(SELECT c.jid,c.name,COALESCE.*?)", arrayOf',source).group(1)
+assert [r[0] for r in db.execute(query,('',-1,''))]==['pin','new','old']
+# A late history snapshot cannot undo a newer unpin.
+db.execute("UPDATE chats SET pinned=0,pinned_changed=400 WHERE jid='pin'")
+history_pin=re.search(r'"(UPDATE chats SET pinned=\? WHERE jid=\? AND pinned_changed=0)"',source).group(1)
+db.execute(history_pin,(200,'pin'))
+assert [r[0] for r in db.execute(query,('',-1,''))]==['new','old','pin']
+print('PASS: v7 -> v8, pinned ordering, unpin ordering and stale history guard')

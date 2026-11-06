@@ -336,7 +336,7 @@ class MainActivity : Activity() {
             row.addView(label(if(chat.jid in selectedChats)"✓" else name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),28) },LinearLayout.LayoutParams(dp(52),dp(52)))
             row.addView(column().apply {
                 setPadding(dp(14),0,dp(8),0)
-                addView(label(name,18f).apply { setTypeface(null,Typeface.BOLD); setSingleLine(true) })
+                addView(label((if(chat.pinned>0)"📌 " else "")+name,18f).apply { setTypeface(null,Typeface.BOLD); setSingleLine(true) })
                 addView(label(chat.preview,14f,muted).apply { setSingleLine(true); ellipsize=android.text.TextUtils.TruncateAt.END; setPadding(0,dp(5),0,0) })
             },LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1f))
             row.addView(label(if(chat.time>0) SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(chat.time)) else "",12f,muted))
@@ -375,6 +375,11 @@ class MainActivity : Activity() {
         val actions=LinearLayout(this).apply {
             setPadding(dp(12),0,dp(12),dp(8));setBackgroundColor(surface)
         }
+        val unpin=chats.filter { it.jid in selectedChats }.all { it.pinned>0 }
+        actions.addView(Button(this).apply {
+            text=if(unpin)"Desfijar" else "Fijar"
+            setOnClickListener { applySelectedChatChange(if(unpin)4 else 3) }
+        },LinearLayout.LayoutParams(0,dp(52),1f))
         val archiveLabel=if(showingArchived)"Desarchivar" else "Archivar"
         actions.addView(Button(this).apply {
             text=archiveLabel;contentDescription="$archiveLabel seleccionadas"
@@ -402,8 +407,10 @@ class MainActivity : Activity() {
                 for(jid in peers) {
                     val anchor=store.latestRemoteMessage(jid)
                     if(change==0)store.deleteChatLocally(jid)
+                    else if(change>=3)store.setPinned(jid,if(change==3)changed else 0,changed)
                     else store.setArchived(jid,change==1,changed)
-                    if(anchor!=null)requests.add(ChatChange(anchor.peer,anchor.id,anchor.outgoing,anchor.time,changed,change))
+                    if(change>=3)requests.add(ChatChange(jid,"",false,changed,changed,change))
+                    else if(anchor!=null)requests.add(ChatChange(anchor.peer,anchor.id,anchor.outgoing,anchor.time,changed,change))
                 }
             }
         } catch(error: Exception) {
@@ -867,7 +874,7 @@ class MainActivity : Activity() {
                                 if(Thread.currentThread().isInterrupted)throw java.io.InterruptedIOException()
                                 val e=nativeHistoryNext(handle) ?: break
                                 val time=e[5].toLong()
-                                val deletion=e[0] in listOf("delete","delete-chat","clear-chat","archive")
+                                val deletion=e[0] in listOf("delete","delete-chat","clear-chat","archive","pin")
                                 if(deletion && e[2].endsWith("@lid")) {
                                     val phone=active.resolve(e[2])
                                     if(phone!=null && phone.endsWith("@s.whatsapp.net") && !db.link(e[2],phone))
@@ -876,11 +883,13 @@ class MainActivity : Activity() {
                                 when(e[0]) {
                                     "alias" -> if(!db.link(e[1],e[2]))throw java.io.IOException("Conflicting history address")
                                     "chat" -> {
-                                        db.historyChat(e[2],e[3]);importedChats++
+                                        db.historyChat(e[2],e[3],time);importedChats++
                                         if(requestedPeer!=null && db.resolve(e[2])==db.resolve(requestedPeer))
                                             containsRequestedPeer=true
                                     }
                                     "delete", "edit" -> db.applyMessageMutation(e[2],e[1],e[4]=="1",e[0],time,e[3])
+                                    "history-pin" -> db.historyPinned(e[2],e[3].toLong()*1000)
+                                    "pin" -> db.setPinned(e[2],if(e[4]=="1")time else 0,time)
                                     "history-archive" -> db.historyArchived(e[2],e[4]=="1")
                                     "archive" -> {
                                         db.setArchived(e[2],e[4]=="1",time)

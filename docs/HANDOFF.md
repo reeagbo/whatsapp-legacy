@@ -1,6 +1,16 @@
 # Continuidad del proyecto — 6 de noviembre de 2026
 
-## Actualización vigente: 0.36-debug (6 de noviembre)
+## Actualización 0.37-debug: fijados y orden
+
+- SQLite v8: pinned y pinned_changed; migración conservando historial y fusión PN/LID.
+- Historial Conversation.pinned (24) y app-state regular_low pin_v1 / SyncActionValue.pinAction (5), apiVersion 5.
+- Selección de chats: Fijar/Desfijar con cambio local inmediato y cola remota existente, incluso sin mensaje ancla.
+- Fijados por timestamp descendente; resto por actividad descendente, desempate por JID. Se conserva conversationTimestamp/lastMsgTimestamp importado.
+- Pruebas locales: pin/unpin autenticado y descifrado; migración v7-v8, orden, desfijado y protección frente a historial tardío; suite SQLite existente aprobada.
+- Compilación local ARM32 aprobada: assembleDebug, testDebugUnitTest, lintDebug y suite completa C99. APK de 3.238.809 bytes sin firmar; no instalable como actualización. El usuario autorizó explícitamente publicar en main y ejecutar GitHub Actions para generar la APK firmada; se inicia la entrega remota. Se corrigieron también las rutas 0.37 del workflow. No se ejecutó emulador.
+- La cola saliente sigue sin persistencia ni reintento tras fallo. Validación en cuenta real pendiente. Entrega ARM32 exclusivamente.
+
+## Actualización anterior: 0.36-debug (6 de noviembre)
 
 Esta sección sustituye el estado 0.35 descrito más abajo. El usuario sigue probando con un Samsung M13; su Android admite aplicaciones armeabi-v7a (32 bits). Se entregó exclusivamente ARM32.
 

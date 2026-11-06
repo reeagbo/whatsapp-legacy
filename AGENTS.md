@@ -3,6 +3,9 @@
 - During the current synchronization debugging phase, compile and deliver a new
   version after source changes without waiting for an explicit build request.
   This temporary authorization was given by the user on 2026-11-05.
+- On 2026-11-06 the user explicitly authorized publishing changes to main of
+  reeagbo/whatsapp-legacy and running GitHub Actions to produce signed APKs.
+  Continue this workflow without repeated authorization during this phase.
 - GitHub Actions may build pushes to main during this phase. Avoid intermediate
   builds by saving source/version changes before updating the workflow.
 - Include the app version in the APK filename and provide direct GitHub links.

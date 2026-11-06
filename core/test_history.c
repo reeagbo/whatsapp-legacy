@@ -241,6 +241,17 @@ int main(void) {
   memcpy(low_descriptor,descriptor,dn);ldn=dn;
   assert(put_number(110,1,low_descriptor,sizeof low_descriptor,&ldn));
   h=calloc(1,sizeof *h);assert(h&&state_open_checked(h,&io,(wa_slice){low_descriptor,ldn},(wa_slice){low_snapshot,ln},NULL,&stage));
+  big64(stored_version,1);assert(io.put(io.user,version_key(1),stored_version,8));
+  /* Pin/unpin has no message anchor; authenticate and decrypt the real patch. */
+  for(int pin=3;pin<=4;pin++) {
+   wa_tree *pt=wa_history_delete_patch(h,&io,"pin","123456789@lid","",0,0,1700000003000ULL,pin);assert(pt);
+   wa_node *patch=wa_node_child(wa_node_child(wa_node_child(pt->root,"sync"),"collection"),"patch");assert(patch);
+   uint8_t task[4096];size_t tn=0;
+   assert(put_number(101,2,task,sizeof task,&tn)&&put_number(110,1,task,sizeof task,&tn)&&put_number(108,2,task,sizeof task,&tn)&&put_bytes(103,patch->data,patch->data_len,task,sizeof task,&tn));
+   wa_history *ph=wa_history_open_sync(&io,task,tn,NULL,0,NULL);
+   assert(ph&&wa_history_next(ph,&e,&time)==1&&!strcmp(e.kind,"pin")&&e.state==(pin==3)&&time==1700000003000ULL);
+   wa_history_free(ph);wa_tree_free(pt);
+  }
   wa_tree *archive=wa_history_delete_patch(h,&io,"archive","123456789@lid","last",0,1700000000000ULL,1700000003000ULL,1);
   assert(archive);wa_history_free(h);
   wa_node *ap=wa_node_child(wa_node_child(wa_node_child(archive->root,"sync"),"collection"),"patch");assert(ap);
