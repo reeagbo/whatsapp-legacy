@@ -19,4 +19,10 @@ int wa_signal_decrypt(wa_signal *,const char *jid,int prekey_message,const uint8
 typedef int (*wa_signal_plaintext_callback)(void *,const uint8_t *,size_t);
 int wa_signal_decrypt_with_callback(wa_signal *,const char *jid,int prekey_message,
  const uint8_t *,size_t,uint8_t *,size_t,size_t *,wa_signal_plaintext_callback,void *);
+/* Sender-key sessions are keyed by group, author identity domain and device. */
+int wa_signal_group_distribution(wa_signal *,const char *,const char *,uint8_t *,size_t,size_t *);
+int wa_signal_group_process(wa_signal *,const char *,const char *,const uint8_t *,size_t);
+int wa_signal_group_reset(wa_signal *,const char *,const char *);
+int wa_signal_group_encrypt(wa_signal *,const char *,const char *,const uint8_t *,size_t,uint8_t *,size_t,size_t *);
+int wa_signal_group_decrypt(wa_signal *,const char *,const char *,const uint8_t *,size_t,uint8_t *,size_t,size_t *,wa_signal_plaintext_callback,void *);
 #endif

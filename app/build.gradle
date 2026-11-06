@@ -11,8 +11,8 @@ android {
         applicationId 'org.reeagbo.whatsapplegacy'
         minSdk 21
         targetSdk 35
-        versionCode 32
-        versionName '0.32-debug'
+        versionCode 33
+        versionName '0.33-debug'
         ndk { abiFilters targetAbi }
         externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_static' } }
     }

@@ -765,7 +765,7 @@ static int handle_node(wa_pair_session *s, const wa_node *n) {
     if (wa_node_child(n, "link_code_companion_reg") && !handle_link(s, n))
       return 0;
 
-    if(s->state==5&&s->messenger&&type&&!strcmp(type,"server_sync"))return wa_messenger_node(s->messenger,n);
+    if(s->state==5&&s->messenger&&type&&(!strcmp(type,"server_sync")||!strcmp(type,"w:gp2")))return wa_messenger_node(s->messenger,n);
     return notification_ack(s, n);
   }
   if (!strcmp(n->tag, "stream:error") || !strcmp(n->tag, "failure")) {
@@ -977,4 +977,8 @@ int wa_pair_ping(wa_pair_session *s) {
   wa_tree_free(t);
 
   return ok;
+}
+
+int wa_pair_group(wa_pair_session *s,int action,const char *jid,const char *subject,const char *members) {
+ return s&&s->state==5&&s->messenger&&wa_messenger_group(s->messenger,action,jid,subject,members);
 }

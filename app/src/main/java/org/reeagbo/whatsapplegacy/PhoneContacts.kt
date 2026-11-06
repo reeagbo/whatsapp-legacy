@@ -48,4 +48,29 @@ internal class PhoneContacts(private val context: Context) {
         }
         return names
     }
+
+    data class Entry(val name: String, val number: String)
+    fun search(query: String): List<Entry> {
+        if(!allowed())return emptyList()
+        val uri=Uri.withAppendedPath(ContactsContract.CommonDataKinds.Phone.CONTENT_FILTER_URI,Uri.encode(query.trim()))
+        val source=if(query.isBlank())ContactsContract.CommonDataKinds.Phone.CONTENT_URI else uri
+        val result=linkedMapOf<String,Entry>()
+        val telephony=context.getSystemService(Context.TELEPHONY_SERVICE) as? android.telephony.TelephonyManager
+        val country=telephony?.networkCountryIso?.takeIf { it.isNotBlank() }?.uppercase(Locale.ROOT)
+            ?: telephony?.simCountryIso?.takeIf { it.isNotBlank() }?.uppercase(Locale.ROOT) ?: Locale.getDefault().country
+        context.contentResolver.query(source,arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+            ContactsContract.CommonDataKinds.Phone.NUMBER,ContactsContract.CommonDataKinds.Phone.NORMALIZED_NUMBER),
+            null,null,ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME+" COLLATE LOCALIZED ASC")?.use { c ->
+            while(c.moveToNext() && result.size<100) {
+                val raw=c.getString(1).orEmpty()
+                val number=c.getString(2)?.takeIf { it.matches(Regex("^\\+[1-9][0-9]{7,14}$")) }
+                    ?: PhoneNumberUtils.formatNumberToE164(raw,country)
+                if(number!=null && number.matches(Regex("^\\+[1-9][0-9]{7,14}$"))) {
+                    val name=c.getString(0)?.trim().orEmpty().ifBlank { number }
+                    if(!result.containsKey(number))result[number]=Entry(name,number)
+                }
+            }
+        }
+        return result.values.toList()
+    }
 }

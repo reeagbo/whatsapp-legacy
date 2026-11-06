@@ -5,7 +5,7 @@
 #include "node.h"
 #define WA_TEXT_MAX 4000
 /* UTF-8 application events, never part of diagnostic logs. */
-typedef struct {char kind[16],id[96],jid[128],text[WA_TEXT_MAX+1];int state;uint64_t timestamp;} wa_message_event;
+typedef struct {char kind[16],id[96],jid[128],text[WA_TEXT_MAX+1];int state;uint64_t timestamp;char author[128];} wa_message_event;
 typedef struct wa_messenger wa_messenger;
 typedef int (*wa_send_node)(void *,wa_tree *);
 wa_messenger *wa_messenger_create(const wa_identity *,const wa_storage *,const char *own_lid,wa_send_node,void *);
@@ -22,6 +22,8 @@ int wa_messenger_delete_chat(wa_messenger *,const char *,const char *,int,uint64
 int wa_messenger_write_pending(const wa_messenger *,const char *);
 void wa_messenger_delete_snapshot(wa_messenger *,const struct wa_history *);
 void wa_messenger_recover_state(wa_messenger *,int low);
+/* action: 0 sync participating groups, 1 create, 2 leave, 3 metadata. */
+int wa_messenger_group(wa_messenger *,int,const char *,const char *,const char *);
 void wa_messenger_tick(wa_messenger *,uint64_t now_ms);
 const wa_message_event *wa_messenger_event(const wa_messenger *);
 void wa_messenger_event_done(wa_messenger *);

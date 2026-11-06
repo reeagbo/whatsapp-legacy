@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define RECORD_MAX (15u + 95u + 1215u + WA_TEXT_MAX)
+#define RECORD_MAX (17u + 127u + 95u + 1215u + WA_TEXT_MAX)
 #define INBOX_BYTES (10u + WA_INBOX_LIMIT * RECORD_MAX + SHA256_DIGEST_LENGTH)
 struct wa_inbox {
   wa_storage io;
@@ -15,23 +15,24 @@ static void u16(uint8_t *out,size_t n) {out[0]=(uint8_t)(n>>8);out[1]=(uint8_t)n
 static size_t read16(const uint8_t *p) {return ((size_t)p[0]<<8)|p[1];}
 static int is_record(const wa_message_event *e) {
   return e && memchr(e->kind,0,sizeof e->kind)&&memchr(e->id,0,sizeof e->id)&&
-    memchr(e->jid,0,sizeof e->jid)&&memchr(e->text,0,sizeof e->text)&&(!strcmp(e->kind,"message")||!strcmp(e->kind,"sent-copy")) &&
+    memchr(e->author,0,sizeof e->author)&&memchr(e->jid,0,sizeof e->jid)&&memchr(e->text,0,sizeof e->text)&&(!strcmp(e->kind,"message")||!strcmp(e->kind,"sent-copy")) &&
     e->id[0]&&e->jid[0]&&e->text[0]&&
     strlen(e->id)<sizeof e->id&&strlen(e->jid)<sizeof e->jid&&strlen(e->text)<=WA_TEXT_MAX;
 }
 static int save(wa_inbox *in,const wa_message_event *extra,size_t omit) {
   uint8_t *out=malloc(INBOX_BYTES);if(!out)return 0;
-  memcpy(out,"WAINBOX2",8);size_t count=in->count+(extra?1:0)-(omit<in->count?1:0),used=10;
+  memcpy(out,"WAINBOX3",8);size_t count=in->count+(extra?1:0)-(omit<in->count?1:0),used=10;
   u16(out+8,count);
   for(size_t j=0;j<in->count+(extra?1:0);j++) {
     if(j==omit)continue;
     const wa_message_event *e=j<in->count?in->records+j:extra;
     if(!is_record(e)){OPENSSL_cleanse(out,INBOX_BYTES);free(out);return 0;}
-    size_t a=strlen(e->id),b=strlen(e->jid),c=strlen(e->text);
-    if(used+15+a+b+c>INBOX_BYTES-SHA256_DIGEST_LENGTH){OPENSSL_cleanse(out,INBOX_BYTES);free(out);return 0;}
+    size_t a=strlen(e->id),b=strlen(e->jid),c=strlen(e->text),d=strlen(e->author);
+    if(used+17+a+b+c+d>INBOX_BYTES-SHA256_DIGEST_LENGTH){OPENSSL_cleanse(out,INBOX_BYTES);free(out);return 0;}
     out[used]=!strcmp(e->kind,"sent-copy")?1:0;
     u16(out+used+1,a);u16(out+used+3,b);u16(out+used+5,c);used+=7;
     for(unsigned i=0;i<8;i++)out[used++]=(uint8_t)(e->timestamp>>(56-8*i));
+    u16(out+used,d);used+=2;memcpy(out+used,e->author,d);used+=d;
     memcpy(out+used,e->id,a);used+=a;memcpy(out+used,e->jid,b);used+=b;memcpy(out+used,e->text,c);used+=c;
   }
   int ok=SHA256(out,used,out+used)!=NULL;
@@ -48,9 +49,9 @@ wa_inbox *wa_inbox_open(const wa_storage *io) {
   if(result==1&&n>=10+SHA256_DIGEST_LENGTH&&n<=INBOX_BYTES&&
      SHA256(raw,n-SHA256_DIGEST_LENGTH,digest)&&
      !CRYPTO_memcmp(digest,raw+n-SHA256_DIGEST_LENGTH,SHA256_DIGEST_LENGTH)&&
-     (!memcmp(raw,"WAINBOX1",8)||!memcmp(raw,"WAINBOX2",8))) {
+     (!memcmp(raw,"WAINBOX1",8)||!memcmp(raw,"WAINBOX2",8)||!memcmp(raw,"WAINBOX3",8))) {
     n-=SHA256_DIGEST_LENGTH;
-    int version2=raw[7]=='2';
+    int version2=raw[7]>='2',version3=raw[7]=='3';
     size_t count=read16(raw+8),p=10;ok=count<=WA_INBOX_LIMIT;
     for(size_t j=0;ok&&j<count;j++) {
       if(n-p<(version2?15u:7u)){ok=0;break;}
@@ -59,6 +60,8 @@ wa_inbox *wa_inbox_open(const wa_storage *io) {
       if(version2)for(unsigned i=0;i<8;i++)timestamp=(timestamp<<8)|raw[p++];
       if(own>1||!a||a>=96||!b||b>=128||!c||c>WA_TEXT_MAX||a+b+c>n-p){ok=0;break;}
       wa_message_event *e=in->records+j;
+      if(version3){if(n-p<2){ok=0;break;}size_t d=read16(raw+p);p+=2;if(d>=sizeof e->author||d>n-p){ok=0;break;}memcpy(e->author,raw+p,d);p+=d;if(strlen(e->author)!=d){ok=0;break;}}
+      if(a+b+c>n-p){ok=0;break;}
       strcpy(e->kind,own?"sent-copy":"message");e->state=own?2:0;e->timestamp=timestamp;
       memcpy(e->id,raw+p,a);p+=a;memcpy(e->jid,raw+p,b);p+=b;memcpy(e->text,raw+p,c);p+=c;
       if(strlen(e->id)!=a||strlen(e->jid)!=b||strlen(e->text)!=c){ok=0;break;}

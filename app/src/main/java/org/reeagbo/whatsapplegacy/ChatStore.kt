@@ -6,10 +6,10 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
 /** Android conversation storage. Protocol/Signal state belongs to the C core. */
-class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 6) {
+class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 7) {
     data class Chat(val jid: String, val name: String, val preview: String, val time: Long, val pushName: String, val archived: Boolean)
     data class Message(val id: String, val peer: String, val text: String, val outgoing: Boolean,
-                       val status: Int, val time: Long, val note: String)
+                       val status: Int, val time: Long, val note: String, val author: String = "")
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
         db.execSQL("PRAGMA synchronous=FULL")
@@ -21,6 +21,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         createSync(db)
         addArchiveColumn(db)
         addArchiveTimestamp(db)
+        createGroups(db)
     }
     private fun createMessages(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE messages(id TEXT NOT NULL, peer TEXT NOT NULL REFERENCES chats(jid), text TEXT NOT NULL, outgoing INTEGER NOT NULL, status INTEGER NOT NULL, time INTEGER NOT NULL, note TEXT NOT NULL, PRIMARY KEY(peer,id,outgoing))")
@@ -54,6 +55,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         if (oldVersion < 4) createSync(db)
         if (oldVersion < 5) addArchiveColumn(db)
         if (oldVersion < 6) addArchiveTimestamp(db)
+        if (oldVersion < 7) createGroups(db)
     }
     fun addChat(address: String, name: String = "", updated: Long = System.currentTimeMillis()) {
         val jid = resolve(address)
@@ -78,16 +80,16 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
     }
     fun chat(jid: String): Chat? = queryChats(resolve(jid)).firstOrNull()
     private fun queryChats(jid: String?, archived: Boolean? = null): List<Chat> = readableDatabase.rawQuery(
-        "SELECT c.jid,c.name,COALESCE((SELECT text FROM messages m WHERE m.peer=c.jid ORDER BY time DESC,rowid DESC LIMIT 1),''),c.updated,COALESCE((SELECT name FROM contact_names n WHERE n.jid=c.jid),''),c.archived FROM chats c WHERE (?='' AND (CAST(? AS INTEGER) IN (-1,c.archived)) AND EXISTS(SELECT 1 FROM messages m WHERE m.peer=c.jid)) OR c.jid=? ORDER BY c.updated DESC", arrayOf(jid.orEmpty(),when(archived) { true -> "1"; false -> "0"; null -> "-1" },jid.orEmpty())
+        "SELECT c.jid,c.name,COALESCE((SELECT text FROM messages m WHERE m.peer=c.jid ORDER BY time DESC,rowid DESC LIMIT 1),''),c.updated,COALESCE((SELECT name FROM contact_names n WHERE n.jid=c.jid),''),c.archived FROM chats c WHERE (?='' AND (CAST(? AS INTEGER) IN (-1,c.archived)) AND (EXISTS(SELECT 1 FROM messages m WHERE m.peer=c.jid) OR EXISTS(SELECT 1 FROM group_metadata g WHERE g.jid=c.jid AND g.visible=1))) OR c.jid=? ORDER BY c.updated DESC", arrayOf(jid.orEmpty(),when(archived) { true -> "1"; false -> "0"; null -> "-1" },jid.orEmpty())
     ).use { c -> buildList { while (c.moveToNext()) add(Chat(c.getString(0), c.getString(1), c.getString(2), c.getLong(3), c.getString(4), c.getInt(5)!=0)) } }
     fun messages(jid: String, limit: Int = 100): List<Message> = readableDatabase.rawQuery(
-        "SELECT id,peer,text,outgoing,status,time,note FROM messages WHERE peer=? ORDER BY time DESC,id DESC,outgoing DESC LIMIT ?", arrayOf(resolve(jid),limit.coerceIn(1,5000).toString())
-    ).use { c -> buildList { while (c.moveToNext()) add(Message(c.getString(0),c.getString(1),c.getString(2),c.getInt(3)!=0,c.getInt(4),c.getLong(5),c.getString(6))) }.reversed() }
+        "SELECT id,peer,text,outgoing,status,time,note,COALESCE((SELECT author FROM message_authors a WHERE a.peer=messages.peer AND a.id=messages.id AND a.outgoing=messages.outgoing),'') FROM messages WHERE peer=? ORDER BY time DESC,id DESC,outgoing DESC LIMIT ?", arrayOf(resolve(jid),limit.coerceIn(1,5000).toString())
+    ).use { c -> buildList { while (c.moveToNext()) add(Message(c.getString(0),c.getString(1),c.getString(2),c.getInt(3)!=0,c.getInt(4),c.getLong(5),c.getString(6),c.getString(7))) }.reversed() }
     fun hasEarlier(jid: String, first: Message): Boolean = readableDatabase.rawQuery(
         "SELECT 1 FROM messages WHERE peer=? AND (time<? OR (time=? AND (id<? OR (id=? AND outgoing<?)))) LIMIT 1",
         arrayOf(resolve(jid),first.time.toString(),first.time.toString(),first.id,first.id,if(first.outgoing)"1" else "0")
     ).use { it.moveToFirst() }
-    fun append(id: String, address: String, text: String, outgoing: Boolean, status: Int, time: Long = System.currentTimeMillis(), historical: Boolean = false) {
+    fun append(id: String, address: String, text: String, outgoing: Boolean, status: Int, time: Long = System.currentTimeMillis(), historical: Boolean = false, author: String = "") {
         val jid = resolve(address)
         val db = writableDatabase
         db.beginTransaction()
@@ -121,6 +123,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
             } else if (outgoing && status >= 2) {
                 db.execSQL("UPDATE messages SET status=MAX(status,?),note='' WHERE peer=? AND id=? AND outgoing=1", arrayOf(status,jid,id))
             }
+            if(author.isNotBlank())db.execSQL("INSERT OR REPLACE INTO message_authors(peer,id,outgoing,author) VALUES(?,?,?,?)",arrayOf(jid,id,if(outgoing)1 else 0,author))
             if(exists && historical) db.execSQL("UPDATE messages SET time=MIN(time,?) WHERE peer=? AND id=? AND outgoing=?",arrayOf(time,jid,id,if(outgoing)1 else 0))
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
@@ -164,6 +167,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         val latest=readableDatabase.rawQuery("SELECT MAX(time) FROM messages WHERE peer=?",arrayOf(peer)).use {
             if(it.moveToFirst())it.getLong(0) else 0L
         }
+        writableDatabase.execSQL("UPDATE group_metadata SET visible=0 WHERE jid=?",arrayOf(peer))
         applyChatDeletion(peer,maxOf(now,latest),now,true)
     }
     fun applyChatDeletion(address: String, cutoff: Long, changed: Long, removeChat: Boolean) {
@@ -173,6 +177,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
             db.execSQL("INSERT OR IGNORE INTO chat_deletions(peer,cutoff,changed,remove_chat) VALUES(?,0,0,0)",arrayOf(peer))
             db.execSQL("UPDATE chat_deletions SET cutoff=MAX(cutoff,?),changed=MAX(changed,?),remove_chat=MAX(remove_chat,?) WHERE peer=?",arrayOf(cutoff,changed,if(removeChat)1 else 0,peer))
             db.execSQL("DELETE FROM messages WHERE peer=? AND time<=(SELECT cutoff FROM chat_deletions WHERE peer=?)",arrayOf(peer,peer))
+            if(removeChat)db.execSQL("UPDATE group_metadata SET visible=0 WHERE jid=?",arrayOf(peer))
             if(removeChat)db.execSQL("DELETE FROM chats WHERE jid=? AND NOT EXISTS(SELECT 1 FROM messages WHERE peer=?)",arrayOf(peer,peer))
             db.execSQL("DELETE FROM history_pages WHERE peer=?",arrayOf(peer))
             db.setTransactionSuccessful()
@@ -268,5 +273,32 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
     }
     fun interrupted() {
         writableDatabase.execSQL("UPDATE messages SET status=-2,note='Conexión interrumpida; no se conoce el resultado' WHERE outgoing=1 AND status IN (0,1)")
+    }
+
+    private fun createGroups(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE group_metadata(jid TEXT PRIMARY KEY, members TEXT NOT NULL DEFAULT '',left_group INTEGER NOT NULL DEFAULT 0,visible INTEGER NOT NULL DEFAULT 0)")
+        db.execSQL("CREATE TABLE message_authors(peer TEXT NOT NULL,id TEXT NOT NULL,outgoing INTEGER NOT NULL,author TEXT NOT NULL,PRIMARY KEY(peer,id,outgoing))")
+    }
+    fun updateGroup(jid: String, subject: String, joined: Boolean, created: Boolean) = historyTransaction {
+        addChat(jid,updated=0)
+        learnName(jid,subject)
+        writableDatabase.execSQL("INSERT OR IGNORE INTO group_metadata(jid) VALUES(?)",arrayOf(jid))
+        writableDatabase.execSQL("UPDATE group_metadata SET left_group=?,visible=MAX(visible,?) WHERE jid=?",arrayOf(if(joined)0 else 1,if(created)1 else 0,jid))
+    }
+    fun groupMembers(jid: String): List<Pair<String,Boolean>> = readableDatabase.rawQuery(
+        "SELECT members FROM group_metadata WHERE jid=?",arrayOf(jid)
+    ).use { c -> if(!c.moveToFirst())emptyList() else c.getString(0).lineSequence().mapNotNull {
+        val parts=it.split('\t');if(parts.size==2)parts[0] to (parts[1]=="1") else null
+    }.toList() }
+    fun setGroupMembers(jid: String, members: String) {
+        writableDatabase.execSQL("INSERT OR IGNORE INTO group_metadata(jid) VALUES(?)",arrayOf(jid))
+        writableDatabase.execSQL("UPDATE group_metadata SET members=? WHERE jid=?",arrayOf(members,jid))
+    }
+    fun groupLeft(jid: String): Boolean = readableDatabase.rawQuery(
+        "SELECT left_group FROM group_metadata WHERE jid=?",arrayOf(jid)
+    ).use { it.moveToFirst() && it.getInt(0)!=0 }
+    fun leaveGroup(jid: String) {
+        writableDatabase.execSQL("INSERT OR IGNORE INTO group_metadata(jid) VALUES(?)",arrayOf(jid))
+        writableDatabase.execSQL("UPDATE group_metadata SET left_group=1 WHERE jid=?",arrayOf(jid))
     }
 }

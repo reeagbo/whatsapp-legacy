@@ -27,7 +27,7 @@ static int text(wa_slice b,char *out,size_t cap){if(!b.len||b.len>=cap||memchr(b
  for(size_t i=0;i<b.len;){unsigned c=b.ptr[i++],z,min;uint32_t v;if(c<128)continue;if(c>=0xc2&&c<=0xdf){z=1;v=c&31;min=128;}else if(c>=0xe0&&c<=0xef){z=2;v=c&15;min=2048;}else if(c>=0xf0&&c<=0xf4){z=3;v=c&7;min=65536;}else return 0;if(z>b.len-i)return 0;while(z--){c=b.ptr[i++];if((c&0xc0)!=0x80)return 0;v=(v<<6)|(c&63);}if(v<min||v>0x10ffff||(v>=0xd800&&v<=0xdfff))return 0;}
  memcpy(out,b.ptr,b.len);out[b.len]=0;return 1;}
 static int str(wa_slice s,unsigned f,char *out,size_t cap){wa_slice b;return bytes(s,f,&b)&&text(b,out,cap);}
-static int address(const char *s){const char *a=strchr(s,'@');if(!a||a==s||a-s>40)return 0;for(const char *p=s;p<a;p++)if(*p<'0'||*p>'9')return 0;return !strcmp(a,"@lid")||!strcmp(a,"@s.whatsapp.net");}
+static int address(const char *s){const char *a=strchr(s,'@');if(!a||a==s||a-s>40)return 0;for(const char *p=s;p<a;p++)if((*p<'0'||*p>'9')&&(*p!='-'||strcmp(a,"@g.us")))return 0;return !strcmp(a,"@lid")||!strcmp(a,"@s.whatsapp.net")||!strcmp(a,"@g.us");}
 static void key(unsigned slot,char out[32]){snprintf(out,32,"history-task-%u",slot);}
 int wa_history_task(const wa_storage *io,unsigned slot,uint8_t *out,size_t cap,size_t *n){if(!io||slot>=WA_HISTORY_TASKS)return -1;char k[32];key(slot,k);return io->get(io->user,k,out,cap,n);}
 int wa_history_save(const wa_storage *io,const uint8_t *p,size_t n){
@@ -799,6 +799,7 @@ static int message(wa_slice record,const char *chat,wa_slice meta,wa_message_eve
  if(strcmp(remote,chat)){char alternate[128];int matches=(str(meta,39,alternate,sizeof alternate)&&!strcmp(remote,alternate))||(str(meta,42,alternate,sizeof alternate)&&!strcmp(remote,alternate));if(!matches)return 0;}
  wa_slice t;if(!bytes(msg,1,&t)&&(!bytes(msg,6,&inner)||!bytes(inner,1,&t)))return 0;
  if(!text(t,e->text,sizeof e->text))return 0;uint64_t sec=number(web,3);if(!sec||sec>253402300799ULL)return 0;*time=sec*1000;
+ if(strstr(chat,"@g.us"))str(key,4,e->author,sizeof e->author);
  int own=number(key,2)!=0;strcpy(e->kind,own?"sent-copy":"message");strcpy(e->jid,chat);uint64_t status=number(web,4);e->state=own?(status>=2&&status<=5?(status>4?4:(int)status):-2):0;return 1;
 }
 int wa_history_next(wa_history *h,wa_message_event *e,uint64_t *time){if(!h||!e||!time)return -1;

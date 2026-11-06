@@ -25,6 +25,8 @@ cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c histor
 
 cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c history.c storage_posix.c node.c noise.c wire.c test_messaging.c "$SIG_LIB" -lcrypto -lz -o test_messaging
 ./test_messaging
+cc $FLAGS -I"$SIG_SRC" identity.c crypto_signal.c signal_engine.c inbox.c history.c storage_posix.c node.c noise.c wire.c test_groups.c "$SIG_LIB" -lcrypto -lz -o test_groups
+./test_groups
 cc $FLAGS inbox.c test_inbox.c -lcrypto -o test_inbox
 ./test_inbox
 cc $FLAGS wire.c node.c storage_posix.c test_history.c -lcrypto -lz -o test_history

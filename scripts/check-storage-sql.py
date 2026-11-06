@@ -12,6 +12,7 @@ root = Path(__file__).resolve().parents[1]
 source = (root/'app/src/main/java/org/reeagbo/whatsapplegacy/ChatStore.kt').read_text()
 def literals(block):
     return re.findall(r'db\.execSQL\("([^"]+)"', block)
+group_schema = literals(source.split('private fun createGroups',1)[1].split('fun updateGroup',1)[0])
 new_schema = literals(source.split('private fun createMessages',1)[1].split('private fun createContacts',1)[0])
 contact_schema = literals(source.split('private fun createContacts',1)[1].split('private fun createSync',1)[0])
 sync_schema = literals(source.split('private fun createSync',1)[1].split('private fun addArchiveColumn',1)[0])
@@ -73,7 +74,7 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     assert len(merge)==len(args)==20
     path=Path(folder)/'merge.db'
     db=sqlite3.connect(path);db.execute('PRAGMA foreign_keys=ON')
-    for sql in [chats]+new_schema+contact_schema+sync_schema+archive_schema: db.execute(sql)
+    for sql in [chats]+new_schema+contact_schema+sync_schema+archive_schema+group_schema: db.execute(sql)
     db.executemany('INSERT INTO chats(jid,name,updated) VALUES(?,?,?)',[(lid,'Alias local',200),(pn,'Nombre manual',100)])
     db.execute('UPDATE chats SET archived=1 WHERE jid=?',(lid,))
     rows=[('same',lid,'Duplicate alias',1,4,200,''),('same',pn,'First committed content',1,1,100,'Esperando'),
@@ -118,7 +119,7 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     db=sqlite3.connect(path)
     db.execute('PRAGMA foreign_keys=ON')
     delete = literals(source.split('fun applyChatDeletion',1)[1].split('fun beginHistoryPage',1)[0])
-    for sql,bound in zip(delete,[(pn,),(100,500,0,pn),(pn,pn),(pn,pn),(pn,)]):
+    for sql,bound in zip(delete,[(pn,),(100,500,0,pn),(pn,pn),(pn,),(pn,pn),(pn,)]):
         if not sql.startswith("DELETE FROM chats"):
             db.execute(sql,bound)
     assert db.execute('SELECT COUNT(*) FROM chats WHERE jid=?',(pn,)).fetchone()==(1,)
@@ -153,11 +154,11 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     assert db.execute(visible, ('', '1', '')).fetchall() == []
     # A replayed remote delete removes the old rows, preserving later traffic.
     for _ in range(2):
-        for sql,bound in zip(delete,[(pn,),(100,500,1,pn),(pn,pn),(pn,pn),(pn,)]):
+        for sql,bound in zip(delete,[(pn,),(100,500,1,pn),(pn,pn),(pn,),(pn,pn),(pn,)]):
             db.execute(sql,bound)
     assert [row[0] for row in db.execute(visible, ('', '-1', ''))] == [pn]
     # A local delete advances the cutoff and removes the whole visible chat.
-    for sql,bound in zip(delete,[(pn,),(200,200,1,pn),(pn,pn),(pn,pn),(pn,)]):
+    for sql,bound in zip(delete,[(pn,),(200,200,1,pn),(pn,pn),(pn,),(pn,pn),(pn,)]):
         db.execute(sql,bound)
     assert db.execute(visible, ('', '-1', '')).fetchall() == []
     assert db.execute(visible, (pn, '-1', pn)).fetchone() is None
@@ -166,4 +167,18 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     assert db.execute(cutoff,(phone,'101')).fetchone() is None
     db.commit()
     db.close()
+# Version 6 -> 7 preserves messages while adding group metadata and authors.
+db=sqlite3.connect(':memory:')
+for sql in [chats]+new_schema+contact_schema+sync_schema+archive_schema:db.execute(sql)
+db.execute('INSERT INTO chats(jid,name,updated) VALUES(?,?,?)',('120363000000001@g.us','',100))
+db.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?)',('g1','120363000000001@g.us','Group text',0,0,100,''))
+db.commit();db.execute('BEGIN')
+for sql in group_schema:db.execute(sql)
+db.rollback()
+assert db.execute('SELECT text FROM messages').fetchone()==('Group text',)
+for sql in group_schema:db.execute(sql)
+db.execute('INSERT INTO message_authors VALUES(?,?,?,?)',('120363000000001@g.us','g1',0,'34123456789@s.whatsapp.net'))
+message_query=re.search(r'"(SELECT id,peer,text,outgoing,status,time,note,COALESCE[^"]+)"',source).group(1)
+assert db.execute(message_query,('120363000000001@g.us','100')).fetchone()[7]=='34123456789@s.whatsapp.net'
+print('PASS: v6 -> v7 group/author migration, transactional rollback and original message preservation')
 print('PASS: v1–v5 upgrades to v6, rollback, reopen, Unicode, peer/direction dedup, receipt attribution, alias merges, archive filtering and persistent deletion markers. No compilation performed.')

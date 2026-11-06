@@ -49,6 +49,7 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
+    private external fun nativeGroup(handle: Long, action: Int, jid: String, subject: ByteArray, members: String): Boolean
     private external fun nativeHistoryRequest(handle: Long, jid: String, anchor: String, own: Boolean, time: Long, id: String): Boolean
     private external fun nativeHistorySlots(): Int
     private external fun nativeHistoryTask(handle: Long, slot: Int): ByteArray?
@@ -149,6 +150,7 @@ class MainActivity : Activity() {
     private var chatTitle: TextView? = null
     private var addressLabel: TextView? = null
     private val contactRequest = 302
+    private var contactPickerResume: (() -> Unit)? = null
     private val historyWorker=Executors.newSingleThreadExecutor()
     private val historyHttp=OkHttpClient.Builder().connectTimeout(20,TimeUnit.SECONDS).readTimeout(60,TimeUnit.SECONDS).followRedirects(false).build()
     private var historyBusy=false
@@ -176,7 +178,12 @@ class MainActivity : Activity() {
     private fun shape(color: Int, radius: Int = 14) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
     private fun label(value: String, size: Float = 16f, color: Int = ink) = TextView(this).apply { text = value; textSize = size; setTextColor(color) }
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-    private fun display(jid: String) = if (jid.endsWith("@lid")) "Pendiente" else "+" + jid.substringBefore('@').substringBefore(':')
+    private fun authorPeer(jid: String): String {
+        if(jid.isBlank())return ""
+        val base=jid.substringBefore(':').substringBefore('@')+"@"+jid.substringAfter('@')
+        return connection?.resolve(base) ?: store.resolve(base)
+    }
+    private fun display(jid: String) = if(jid.endsWith("@g.us"))"Grupo" else if (jid.endsWith("@lid")) "Pendiente" else "+" + jid.substringBefore('@').substringBefore(':')
     private fun contactName(chat: ChatStore.Chat) = chat.name.takeIf { it.isNotBlank() }
         ?: phoneNames[chat.jid] ?: chat.pushName.takeIf { it.isNotBlank() } ?: display(chat.jid)
     private fun traceIdentity(chat: ChatStore.Chat) {
@@ -189,7 +196,7 @@ class MainActivity : Activity() {
         val line="CHAT_IDENTITY address=${DebugLog.addressHint(chat.jid)} number_known=${chat.jid.endsWith("@s.whatsapp.net")} name_source=$source agenda_permission=${phoneContacts.allowed()}"
         if(identityDiagnostics[chat.jid]!=line) { identityDiagnostics[chat.jid]=line;debugLog.add(line) }
     }
-    private fun title(jid: String) = store.chat(jid)?.let { contactName(it) } ?: display(jid)
+    private fun title(jid: String) = store.chat(jid)?.let { contactName(it) } ?: phoneNames[jid] ?: display(jid)
     private fun refreshConversation() {
         store.chats().forEach { traceIdentity(it) }
         val current = conversation
@@ -222,7 +229,7 @@ class MainActivity : Activity() {
             contactGeneration++; phoneNames=emptyMap(); checkedContacts.clear(); refreshConversation(); return
         }
         if (force) { contactGeneration++; checkedContacts.clear(); phoneNames=emptyMap() }
-        val requested=store.chats().map { it.jid }.filter { it.endsWith("@s.whatsapp.net") && it !in checkedContacts }.toSet()
+        val requested=store.chats().flatMap { chat -> listOf(chat.jid)+if(chat.jid.endsWith("@g.us"))store.groupMembers(chat.jid).map { store.resolve(it.first) } else emptyList() }.filter { it.endsWith("@s.whatsapp.net") && it !in checkedContacts }.toSet()
         if (requested.isEmpty()) { if(force)refreshConversation(); return }
         checkedContacts.addAll(requested)
         val generation=contactGeneration
@@ -253,6 +260,8 @@ class MainActivity : Activity() {
             getSharedPreferences("permissions",Context.MODE_PRIVATE).edit()
                 .putBoolean("agenda_granted",phoneContacts.allowed()).apply()
             scheduleContacts(true)
+            val resume=contactPickerResume;contactPickerResume=null
+            if(phoneContacts.allowed())resume?.invoke()
             if(!phoneContacts.allowed()) AlertDialog.Builder(this)
                 .setTitle("Acceso a la agenda")
                 .setMessage("Permite el acceso a Contactos en los ajustes de la aplicación para mostrar los nombres de tu agenda.")
@@ -458,12 +467,91 @@ class MainActivity : Activity() {
         val phone=EditText(this).apply { hint="Número internacional (34…)"; inputType=InputType.TYPE_CLASS_PHONE; isSaveEnabled=false }
         val name=EditText(this).apply { hint="Nombre (opcional)"; setSingleLine(true); isSaveEnabled=false }
         form.addView(phone);form.addView(name)
+        form.addView(Button(this).apply { text="Buscar en la agenda";setOnClickListener {
+            pickContact { contact -> phone.setText(contact.number);name.setText(contact.name) }
+        } })
         val dialog=AlertDialog.Builder(this).setTitle("Nueva conversación").setView(form).setNegativeButton("Cancelar",null).setPositiveButton("Abrir",null).create()
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val value=phone.text.toString().trim().removePrefix("+").replace(" ","").replace("-","")
             if(!value.matches(Regex("^[1-9][0-9]{7,14}$")))phone.error="Incluye el prefijo de país: entre 8 y 15 dígitos"
             else { val jid="$value@s.whatsapp.net";debugLog.hide(value);store.addChat(jid,name.text.toString().trim());dialog.dismiss();showChat(jid) }
         } };dialog.show()
+    }
+    private fun pickContact(onPick: (PhoneContacts.Entry) -> Unit) {
+        if(!phoneContacts.allowed()) {
+            contactPickerResume={ pickContact(onPick) };requestContactNames();return
+        }
+        val body=column().apply { setPadding(dp(16),dp(8),dp(16),dp(8)) }
+        val search=EditText(this).apply { hint="Buscar nombre o número";setSingleLine(true) }
+        val rows=column();body.addView(search)
+        body.addView(ScrollView(this).apply { addView(rows) },LinearLayout.LayoutParams(-1,dp(320)))
+        val dialog=AlertDialog.Builder(this).setTitle("Agenda").setView(body).setNegativeButton("Cerrar",null).create()
+        var generation=0
+        fun load() {
+            val request=++generation;val query=search.text.toString()
+            contactWorker.execute {
+                val entries=try { phoneContacts.search(query) } catch(error: Exception) {
+                    debugLog.failure("AGENDA_SEARCH_FAILED",error);emptyList()
+                }
+                handler.post {
+                    if(destroyed||!dialog.isShowing||request!=generation)return@post
+                    rows.removeAllViews()
+                    if(entries.isEmpty())rows.addView(label("No hay contactos con número internacional válido",14f,muted))
+                    for(entry in entries)rows.addView(column().apply {
+                        setPadding(dp(10),dp(10),dp(10),dp(10));isClickable=true
+                        contentDescription="Elegir contacto "+entry.name+" "+entry.number
+                        addView(label(entry.name,17f));addView(label(entry.number,14f,muted))
+                        setOnClickListener { generation++;dialog.dismiss();onPick(entry) }
+                    })
+                }
+            }
+        }
+        search.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { load() }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
+        dialog.setOnDismissListener { generation++ };dialog.show();load()
+    }
+    private fun newGroup() {
+        val form=column().apply { setPadding(dp(20),dp(8),dp(20),dp(8)) }
+        val subject=EditText(this).apply { hint="Nombre del grupo";setSingleLine(true) }
+        val members=EditText(this).apply { hint="Números internacionales, uno por línea";minLines=2;maxLines=5 }
+        form.addView(subject);form.addView(members)
+        form.addView(Button(this).apply { text="Añadir desde la agenda";setOnClickListener {
+            pickContact { contact ->
+                val existing=members.text.toString().lineSequence().filter { it.isNotBlank() }.toMutableList()
+                if(contact.number !in existing)existing.add(contact.number)
+                members.setText(existing.joinToString("\n"))
+            }
+        } })
+        val dialog=AlertDialog.Builder(this).setTitle("Nuevo grupo").setView(form)
+            .setNegativeButton("Cancelar",null).setPositiveButton("Crear",null).create()
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val title=subject.text.toString().trim()
+            val phones=members.text.toString().split(Regex("[\\n,;]+"))
+                .map { it.trim().removePrefix("+").replace(" ","").replace("-","") }.filter { it.isNotBlank() }.distinct()
+            when {
+                title.isBlank()||title.toByteArray(Charsets.UTF_8).size>256 -> subject.error="Escribe un nombre de hasta 256 bytes"
+                phones.isEmpty()||phones.size>64||phones.any { !it.matches(Regex("^[1-9][0-9]{7,14}$")) } -> members.error="Añade entre 1 y 64 números internacionales válidos"
+                !connected -> Toast.makeText(this,"Esperando conexión",Toast.LENGTH_SHORT).show()
+                connection?.group(1,"",title,phones.joinToString("\n") { "$it@s.whatsapp.net" })!=true -> Toast.makeText(this,"No se pudo iniciar la creación. Inténtalo cuando termine la operación actual.",Toast.LENGTH_LONG).show()
+                else -> { dialog.dismiss();statusText="Creando grupo…";statusLabel.text=statusText }
+            }
+        } };dialog.show()
+    }
+    private fun groupInfo(jid: String) {
+        connection?.group(3,jid)
+        val rows=column().apply { setPadding(dp(20),dp(12),dp(20),dp(12)) }
+        if(store.groupLeft(jid))rows.addView(label("Ya no participas en este grupo",16f,muted))
+        val members=store.groupMembers(jid)
+        rows.addView(label("${members.size} participantes",18f))
+        for((peer,admin) in members)rows.addView(label(title(peer)+(if(admin)" · Administrador" else ""),16f).apply { setPadding(0,dp(6),0,dp(6)) })
+        val dialog=AlertDialog.Builder(this).setTitle(title(jid)).setView(ScrollView(this).apply { addView(rows) }).setNegativeButton("Cerrar",null)
+        if(!store.groupLeft(jid))dialog.setPositiveButton("Salir del grupo") { _,_ ->
+            if(connection?.group(2,jid)!=true)Toast.makeText(this,"No se pudo iniciar la salida; revisa la conexión",Toast.LENGTH_LONG).show()
+        }
+        dialog.show()
     }
     private fun showChat(jid: String) {
         selectedChats.clear();conversationScroll=null
@@ -507,6 +595,7 @@ class MainActivity : Activity() {
         sendButton=action("↑","Enviar mensaje") { sendText() }.apply { setTextColor(canvas);background=shape(green,28) }
         bar.addView(sendButton,LinearLayout.LayoutParams(dp(54),dp(54)).apply { leftMargin=dp(8) });page.addView(bar)
         refreshMessages();updateSend()
+        if(jid.endsWith("@g.us"))connection?.group(3,jid)
     }
     private fun refreshMessages(preservePosition: Boolean = false) {
         val jid=conversation ?: return
@@ -527,8 +616,10 @@ class MainActivity : Activity() {
         for(message in messages) {
             val line=LinearLayout(this).apply { gravity=if(message.outgoing)Gravity.END else Gravity.START;setPadding(0,dp(4),0,dp(4)) }
             val bubble=column().apply { background=shape(if(message.outgoing)outgoingSurface else surface);setPadding(dp(13),dp(10),dp(13),dp(8));minimumWidth=dp(104) }
+            if(jid.endsWith("@g.us")&&!message.outgoing&&message.author.isNotBlank())
+                bubble.addView(label(title(authorPeer(message.author)),13f,green))
             bubble.addView(label(message.text,17f).apply { maxWidth=(resources.displayMetrics.widthPixels*0.73).toInt();setTextIsSelectable(true) })
-            val state=if(!message.outgoing) "" else when(message.status) { 0->"Pendiente";1->"Enviado · sin confirmar";2->"Aceptado";3->"Entregado";4->"Leído";-2->"Sin confirmación";else->"No enviado" }
+            val state=if(!message.outgoing) "" else when(message.status) { 0->"Pendiente";1->"Enviado · sin confirmar";2->"Aceptado";3->if(jid.endsWith("@g.us"))"Entregado a alguien" else "Entregado";4->if(jid.endsWith("@g.us"))"Leído por alguien" else "Leído";-2->"Sin confirmación";else->"No enviado" }
             bubble.addView(label(SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(message.time))+if(state.isBlank()) "" else " · $state",11f,muted).apply { gravity=Gravity.END;setPadding(0,dp(6),0,0) })
             if(message.outgoing&&message.status<0&&message.note.isNotBlank())bubble.addView(label(message.note,12f,muted).apply { maxWidth=(resources.displayMetrics.widthPixels*0.73).toInt() })
             line.tag=message.outgoing to message.id
@@ -565,7 +656,7 @@ class MainActivity : Activity() {
         historyRequestPeer=null
         historyRequestId=null
     }
-    private fun updateSend() { sendButton?.isEnabled=connected&&pendingMessage==null;sendButton?.alpha=if(connected&&pendingMessage==null)1f else .4f }
+    private fun updateSend() { val allowed=connected&&pendingMessage==null&&conversation?.let { !it.endsWith("@g.us")||!store.groupLeft(it) }!=false;sendButton?.isEnabled=allowed;sendButton?.alpha=if(allowed)1f else .4f }
     private fun sendText() {
         val jid=conversation?:return;val text=compose?.text?.toString()?.trim().orEmpty();if(text.isBlank())return
         val bytes=text.toByteArray(Charsets.UTF_8)
@@ -603,7 +694,7 @@ class MainActivity : Activity() {
                 "message", "sent-copy" -> if(e[1].isNotBlank()&&e[2].isNotBlank()) {
                     debugLog.hide(e[2].substringBefore('@'))
                     debugLog.add("MESSAGE_TARGET kind=${e[0]} event=${DebugLog.addressHint(e[2])} stored=${DebugLog.addressHint(store.resolve(e[2]))}")
-                    store.append(e[1],e[2],e[3],e[0]=="sent-copy",state,e.getOrNull(5)?.toLongOrNull()?.takeIf { it>0 } ?: System.currentTimeMillis())
+                    store.append(e[1],e[2],e[3],e[0]=="sent-copy",state,e.getOrNull(5)?.toLongOrNull()?.takeIf { it>0 } ?: System.currentTimeMillis(),author=authorPeer(e.getOrNull(6).orEmpty()))
                     // The native inbox keeps the text until this SQLite commit succeeds.
                     connection?.stored(e[1],e[2],e[0]=="sent-copy")
                 }
@@ -619,6 +710,18 @@ class MainActivity : Activity() {
 
                 }
                 "alias-conflict", "alias-storage" -> debugLog.add("CONTACT_MAPPING kind=${e[0]}")
+                "group" -> {
+                    store.updateGroup(e[2],e[3],state==1,e[1]=="created")
+                    if(e[1]=="created")showChat(e[2])
+                }
+                "group-members" -> store.setGroupMembers(e[2],e[3].lineSequence().filter { it.isNotBlank() }.joinToString("\n") { line ->
+                    val parts=line.split('\t');authorPeer(parts[0])+"\t"+parts.getOrElse(1){"0"}
+                })
+                "group-left" -> store.leaveGroup(e[2])
+                "group-result" -> {
+                    debugLog.add("GROUP_OPERATION_RESULT state=$state")
+                    if(state<0)Toast.makeText(this,e[3],Toast.LENGTH_LONG).show()
+                }
                 "contact" -> if(e[2].isNotBlank()) store.learnName(e[2],e[3])
                 "notice" -> debugLog.add("MESSAGING_NOTICE state=$state detail=${e[3]}")
             }
@@ -749,7 +852,7 @@ class MainActivity : Activity() {
                                         debugLog.add("SYNC_CHAT_REMOVAL kind=${e[0]}")
                                     }
                                     "name" -> db.learnName(e[2],e[3])
-                                    "message", "sent-copy" -> { db.append(e[1],e[2],e[3],e[0]=="sent-copy",e[4].toInt(),time,true);importedMessages++ }
+                                    "message", "sent-copy" -> { db.append(e[1],e[2],e[3],e[0]=="sent-copy",e[4].toInt(),time,true,e.getOrNull(6).orEmpty());importedMessages++ }
                                 }
                             }
                         }
@@ -812,7 +915,11 @@ class MainActivity : Activity() {
                 setOnClickListener { dialog.dismiss();run() }
             },LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(6) })
         }
-        conversation?.let { jid -> item("Opciones de conversación","Archivar, editar o eliminar") { chatActions(jid) } }
+        conversation?.let { jid ->
+            item("Opciones de conversación","Archivar, editar o eliminar") { chatActions(jid) }
+            if(jid.endsWith("@g.us"))item("Información del grupo","Participantes y salir del grupo") { groupInfo(jid) }
+        }
+        item("Nuevo grupo","Crear un grupo de texto con contactos o números") { newGroup() }
         if(conversation==null && store.chats(showingArchived).isNotEmpty())
             item("Seleccionar todas","Archivar o eliminar varias conversaciones") {
                 selectedChats.addAll(store.chats(showingArchived).map { it.jid })
@@ -969,6 +1076,12 @@ class MainActivity : Activity() {
                 log("APP_STATE_KEY_REQUEST queued=$sent")
                 if(sent)ws?.let { flush(it) }
             }
+        }
+        fun group(action: Int, jid: String = "", subject: String = "", members: String = ""): Boolean = synchronized(lock) {
+            if(finished||handle==0L)return@synchronized false
+            val sent=nativeGroup(handle,action,jid,subject.toByteArray(Charsets.UTF_8),members)
+            if(sent) { ws?.let { flush(it) };publish() }
+            sent
         }
         fun deleteChat(request: ChatChange): Boolean = synchronized(lock) {
             if(finished || handle==0L)return@synchronized false

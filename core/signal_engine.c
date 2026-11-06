@@ -5,6 +5,8 @@
 #include <session_pre_key.h>
 #include <protocol.h>
 #include <curve.h>
+#include <group_cipher.h>
+#include <group_session_builder.h>
 #include <openssl/sha.h>
 #include <openssl/crypto.h>
 #include <stdlib.h>
@@ -52,6 +54,19 @@ static int own(signal_buffer **pk,signal_buffer **sk,void *u){wa_signal *s=u;uin
 static int reg(void *u,uint32_t *id){*id=((wa_signal*)u)->identity.registration_id;return 0;}
 static int trusted(const signal_protocol_address *a,uint8_t *p,size_t n,void *u){wa_signal *s=u;uint8_t b[33];size_t z=0;char key[80];key_address(key,"identity",a);int r=s->io.get(s->io.user,key,b,sizeof b,&z);return r<0?SG_ERR_UNKNOWN:r==0?1:z==n&&!CRYPTO_memcmp(b,p,n);}
 static int save_identity(const signal_protocol_address *a,uint8_t *p,size_t n,void *u){wa_signal *s=u;if(!p||n!=33)return SG_ERR_INVAL;int r=trusted(a,p,n,u);if(r!=1)return r<0?r:SG_ERR_UNTRUSTED_IDENTITY;char key[80];key_address(key,"identity",a);return s->io.put(s->io.user,key,p,n)?0:SG_ERR_UNKNOWN;}
+static void sender_store_key(const signal_protocol_sender_key_name *name,char out[80]) {
+ char source[320];uint8_t hash[32];
+ int n=snprintf(source,sizeof source,"%.*s|%.*s:%d",(int)name->group_id_len,name->group_id,(int)name->sender.name_len,name->sender.name,name->sender.device_id);
+ SHA256((uint8_t*)source,(size_t)n,hash);strcpy(out,"sender-");
+ for(unsigned i=0;i<32;i++)snprintf(out+7+i*2,3,"%02x",hash[i]);
+}
+static int sender_load(signal_buffer **out,signal_buffer **extra,const signal_protocol_sender_key_name *name,void *u) {
+ (void)extra;char key[80];sender_store_key(name,key);return load(u,key,out);
+}
+static int sender_save(const signal_protocol_sender_key_name *name,uint8_t *p,size_t n,uint8_t *extra,size_t en,void *u) {
+ (void)extra;(void)en;wa_signal *s=u;char key[80];sender_store_key(name,key);
+ return n<=RECORD_MAX&&s->io.put(s->io.user,key,p,n)?0:SG_ERR_UNKNOWN;
+}
 static int pub(wa_signal *s,const uint8_t p[32],ec_public_key **out){uint8_t b[33]={5};memcpy(b+1,p,32);return curve_decode_point(out,b,33,s->ctx);}
 static int pair(wa_signal *s,const uint8_t sk[32],const uint8_t pk[32],ec_key_pair **out){ec_private_key *priv=NULL;ec_public_key *publ=NULL;int r=curve_decode_private_point(&priv,sk,32,s->ctx);if(r>=0)r=pub(s,pk,&publ);if(r>=0)r=ec_key_pair_create(out,publ,priv);if(priv)SIGNAL_UNREF(priv);if(publ)SIGNAL_UNREF(publ);return r;}
 wa_signal *wa_signal_create(const wa_identity *id,const wa_storage *io){
@@ -62,6 +77,8 @@ wa_signal *wa_signal_create(const wa_identity *id,const wa_storage *io){
  signal_protocol_pre_key_store pre={pk_load,pk_store,pk_has,pk_remove,NULL,s};
  signal_protocol_signed_pre_key_store signed_pre={sp_load,sp_store,sp_has,sp_remove,NULL,s};
  signal_protocol_identity_key_store ids={own,reg,save_identity,trusted,NULL,s};
+ signal_protocol_sender_key_store senders={sender_save,sender_load,NULL,s};
+ if(signal_protocol_store_context_set_sender_key_store(s->store,&senders)<0)goto bad;
  if(signal_protocol_store_context_set_session_store(s->store,&sessions)<0||signal_protocol_store_context_set_pre_key_store(s->store,&pre)<0||signal_protocol_store_context_set_signed_pre_key_store(s->store,&signed_pre)<0||signal_protocol_store_context_set_identity_key_store(s->store,&ids)<0)goto bad;
  ec_key_pair *kp=NULL;session_signed_pre_key *sp=NULL;int r=pair(s,id->prekey_private,id->prekey_public,&kp);
  if(r>=0)r=session_signed_pre_key_create(&sp,1,0,kp,id->prekey_signature,64);
@@ -110,4 +127,50 @@ int wa_signal_decrypt_with_callback(wa_signal *s,const char *jid,int pk,const ui
 
 int wa_signal_decrypt(wa_signal *s,const char *jid,int pk,const uint8_t *p,size_t n,uint8_t *out,size_t cap,size_t *len) {
  return wa_signal_decrypt_with_callback(s,jid,pk,p,n,out,cap,len,NULL,NULL);
+}
+
+static int sender_name(const char *group,const char *author,signal_protocol_sender_key_name *out,char name[96]) {
+ if(!group||strlen(group)>100||!strstr(group,"@g.us")||strcmp(strstr(group,"@g.us"),"@g.us"))return 0;
+ out->group_id=group;out->group_id_len=strlen(group);return address(author,&out->sender,name);
+}
+int wa_signal_group_reset(wa_signal *s,const char *g,const char *author) {
+ signal_protocol_sender_key_name id;char name[96],key[80];if(!s||!sender_name(g,author,&id,name))return 0;
+ sender_store_key(&id,key);return s->io.put(s->io.user,key,NULL,0);
+}
+int wa_signal_group_distribution(wa_signal *s,const char *g,const char *author,uint8_t *out,size_t cap,size_t *len) {
+ signal_protocol_sender_key_name id;char name[96];if(!s||!sender_name(g,author,&id,name))return -1;
+ group_session_builder *b=NULL;sender_key_distribution_message *message=NULL;
+ int r=group_session_builder_create(&b,s->store,s->ctx);
+ if(r>=0)r=group_session_builder_create_session(b,&message,&id);
+ if(r>=0){signal_buffer *p=ciphertext_message_get_serialized((ciphertext_message*)message);*len=signal_buffer_len(p);if(*len>cap)r=SG_ERR_NOMEM;else memcpy(out,signal_buffer_data(p),*len);}
+ if(message)SIGNAL_UNREF(message);group_session_builder_free(b);return r;
+}
+int wa_signal_group_process(wa_signal *s,const char *g,const char *author,const uint8_t *p,size_t n) {
+ signal_protocol_sender_key_name id;char name[96];if(!s||!sender_name(g,author,&id,name))return -1;
+ group_session_builder *b=NULL;sender_key_distribution_message *message=NULL;
+ int r=group_session_builder_create(&b,s->store,s->ctx);
+ if(r>=0)r=sender_key_distribution_message_deserialize(&message,p,n,s->ctx);
+ if(r>=0)r=group_session_builder_process_session(b,&id,message);
+ if(message)SIGNAL_UNREF(message);group_session_builder_free(b);return r;
+}
+int wa_signal_group_encrypt(wa_signal *s,const char *g,const char *author,const uint8_t *p,size_t n,uint8_t *out,size_t cap,size_t *len) {
+ signal_protocol_sender_key_name id;char name[96];if(!s||!sender_name(g,author,&id,name))return -1;
+ group_cipher *c=NULL;ciphertext_message *message=NULL;int r=group_cipher_create(&c,s->store,&id,s->ctx);
+ if(r>=0)r=group_cipher_encrypt(c,p,n,&message);
+ if(r>=0){signal_buffer *b=ciphertext_message_get_serialized(message);*len=signal_buffer_len(b);if(*len>cap)r=SG_ERR_NOMEM;else memcpy(out,signal_buffer_data(b),*len);}
+ if(message)SIGNAL_UNREF(message);group_cipher_free(c);return r;
+}
+static int group_before_commit(group_cipher *cipher,signal_buffer *plain,void *context) {
+ (void)cipher;plaintext_callback *cb=context;
+ return cb&&cb->callback?cb->callback(cb->user,signal_buffer_const_data(plain),signal_buffer_len(plain)):0;
+}
+int wa_signal_group_decrypt(wa_signal *s,const char *g,const char *author,const uint8_t *p,size_t n,uint8_t *out,size_t cap,size_t *len,wa_signal_plaintext_callback callback,void *user) {
+ signal_protocol_sender_key_name id;char name[96];if(!s||!sender_name(g,author,&id,name))return -1;
+ group_cipher *c=NULL;signal_buffer *plain=NULL;sender_key_message *message=NULL;plaintext_callback cb={callback,user};
+ int r=group_cipher_create(&c,s->store,&id,s->ctx);
+ if(r>=0&&callback)group_cipher_set_decryption_callback(c,group_before_commit);
+ if(r>=0)r=sender_key_message_deserialize(&message,p,n,s->ctx);
+ if(r>=0)r=group_cipher_decrypt(c,message,&cb,&plain);
+ if(r>=0){*len=signal_buffer_len(plain);if(*len>cap)r=SG_ERR_NOMEM;else memcpy(out,signal_buffer_data(plain),*len);}
+ if(message)SIGNAL_UNREF(message);signal_buffer_bzero_free(plain);group_cipher_free(c);return r;
 }
