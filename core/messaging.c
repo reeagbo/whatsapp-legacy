@@ -20,7 +20,7 @@ struct wa_messenger {
  char group_query[96],group_target[128],group_key[33];
  wa_tree *group_listing;const wa_node *group_next;int group_action;uint64_t group_deadline;unsigned group_sequence;int groups_due;
 
- uint64_t sync_due[2],last_key_request,sync_requested_version,sync_deadline;int sync_more,sync_low,sync_force[2];unsigned sync_sequence;char sync_query[48];
+ uint64_t sync_due[2],last_key_request,sync_requested_version,sync_deadline;int sync_more,sync_low,sync_force[2],rebuild,rebuild_waiting;uint64_t rebuild_version,rebuild_deadline;unsigned sync_sequence;char sync_query[48];
  int ready,boot,pending,phase;uint64_t now,deadline;
  char delete_peer[128],delete_anchor[96],delete_id[48],delete_snapshot[48];
  uint64_t delete_time,delete_changed,delete_deadline;int delete_own,chat_change;
@@ -98,7 +98,7 @@ static int upload(wa_messenger *m){
  if(!ok){wa_tree_free(t);return 0;}return send(m,t);
 }
 wa_messenger *wa_messenger_create(const wa_identity *id,const wa_storage *io,const char *lid,wa_send_node sender,void *u){
- if(!id||!io||!sender||!id->jid[0])return NULL;wa_messenger *m=calloc(1,sizeof *m);if(!m)return NULL;m->me=*id;m->io=*io;m->send=sender;m->user=u;
+ if(!id||!io||!sender||!id->jid[0])return NULL;wa_messenger *m=calloc(1,sizeof *m);if(!m)return NULL;m->me=*id;m->io=*io;m->send=sender;m->user=u;m->rebuild=wa_state_rebuild_needed(io);
  if(!base(id->jid,m->own)||(lid&&*lid&&!base(lid,m->lid))||!(m->inbox=wa_inbox_open(io))||!(m->signal=wa_signal_create(id,io))){wa_messenger_free(m);return NULL;}
  if(!m->lid[0]){char known[128];if(mapped(m,m->own,known)&&strstr(known,"@lid"))copy(m->lid,sizeof m->lid,known);}
  if(m->lid[0]){
@@ -444,10 +444,21 @@ int wa_messenger_delete_chat(wa_messenger *m,const char *peer,const char *anchor
  m->delete_id[0]=0;m->delete_snapshot[0]=0;m->delete_deadline=0;return 0;
 }
 int wa_messenger_write_pending(const wa_messenger *m,const char *request){
- return m&&request&&m->delete_id[0]&&m->delete_snapshot[0]&&!strcmp(m->delete_snapshot,request);
+ return m&&request&&((m->rebuild&&!strcmp(request,WA_STATE_REBUILD_REQUEST))||(m->delete_id[0]&&m->delete_snapshot[0]&&!strcmp(m->delete_snapshot,request)));
 }
 void wa_messenger_delete_snapshot(wa_messenger *m,const struct wa_history *h){
- if(!m||!m->delete_snapshot[0]||strcmp(m->delete_snapshot,wa_history_delete_request(h)))return;
+ if(!m)return;
+ if(!strcmp(wa_history_delete_request(h),WA_STATE_REBUILD_REQUEST)){
+  if(wa_history_write_more(h)){
+   if(!wa_history_save_write_base(h,&m->io))return;
+   m->rebuild_version=wa_history_version(h);
+  }else{
+   m->rebuild=0;m->rebuild_version=0;
+   event(m,"state-sync","","","regular_low-rebuilt",1);
+  }
+  m->rebuild_waiting=0;m->sync_due[1]=0;return;
+ }
+ if(!m->delete_snapshot[0]||strcmp(m->delete_snapshot,wa_history_delete_request(h)))return;
  if(wa_history_write_more(h)){
   if(!wa_history_save_write_base(h,&m->io)||!send(m,wa_state_query_after(wa_history_version(h),m->delete_snapshot,m->chat_change!=0))){delete_result(m,-8);return;}
   m->delete_deadline=m->now+90000;return;
@@ -495,8 +506,10 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
   if(m->sync_query[0]&&!strcmp(id,m->sync_query)){
    m->sync_query[0]=0;
    if(type&&!strcmp(type,"result")){
-    int collected=wa_state_collect(&m->io,node,NULL,m->sync_low);
-    m->sync_more=collected>1;
+    int rebuilding=m->sync_low&&m->rebuild;
+    int collected=wa_state_collect(&m->io,node,rebuilding?WA_STATE_REBUILD_REQUEST:NULL,m->sync_low);
+    m->sync_more=!rebuilding&&collected>1;
+    if(rebuilding&&collected){m->rebuild_waiting=1;m->rebuild_deadline=m->now+120000;}
     if(!collected)m->sync_force[m->sync_low]=1;
     event(m,"state-sync","","",m->sync_low?"regular_low":"regular_high",collected?0:-1);
    }else event(m,"state-sync","","",m->sync_low?"regular_low":"regular_high",-2);
@@ -526,7 +539,7 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
  boot_error:m->boot=0;event(m,"notice","","","No se pudieron preparar las claves de mensajería. Vuelve a conectar.",-1);return 0;
 }
 void wa_messenger_recover_state(wa_messenger *m,int low){
- if(m)m->sync_force[low!=0]=1;
+ if(m){m->sync_force[low!=0]=1;if(low&&m->rebuild){m->rebuild_waiting=0;m->rebuild_version=0;m->sync_due[1]=0;}}
 }
 void wa_messenger_tick(wa_messenger *m,uint64_t now){if(!m)return;int first=m->now==0;m->now=now;
  /* The first tick establishes the external monotonic clock origin. */
@@ -542,14 +555,19 @@ void wa_messenger_tick(wa_messenger *m,uint64_t now){if(!m)return;int first=m->n
    m->sync_due[m->sync_low]=now;
    m->sync_more=0;
   }
+  if(m->rebuild_waiting&&now>=m->rebuild_deadline){
+   m->rebuild_waiting=0;m->rebuild_version=0;m->sync_due[1]=0;
+  }
   int low=m->sync_due[1]<m->sync_due[0];
+  if(low&&m->rebuild_waiting)low=0;
   if(now>=m->sync_due[low]){
    m->sync_low=low;m->sync_more=0;m->sync_due[low]=now+120000;m->sync_deadline=now+30000;
    m->sync_requested_version=wa_state_version(&m->io,low);
    snprintf(m->sync_query,sizeof m->sync_query,"legacy-state-%u",++m->sync_sequence);
    int force=m->sync_force[low];
    m->sync_force[low]=0;
-   if(!send(m,wa_state_query(&m->io,m->sync_query,force,low)))m->sync_query[0]=0;
+   wa_tree *query=low&&m->rebuild?(m->rebuild_version?wa_state_query_after(m->rebuild_version,m->sync_query,1):wa_state_query(&m->io,m->sync_query,1,1)):wa_state_query(&m->io,m->sync_query,force,low);
+   if(!send(m,query))m->sync_query[0]=0;
   }
  }
  if(m->deadline&&now>=m->deadline){m->deadline=0;if(m->pending){event(m,"status",m->id,m->peer,m->phase==3?"Sin confirmación; el envío podría haberse aceptado":"La consulta agotó el tiempo",m->phase==3?-2:-1);m->pending=0;m->phase=0;}if(m->boot){m->boot=0;event(m,"notice","","","Tiempo agotado al preparar la mensajería.",-1);}}

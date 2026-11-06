@@ -394,7 +394,7 @@ wa_history *wa_pair_history_open(wa_pair_session *s,const uint8_t *p,size_t n,co
  wa_history *h=wa_history_open_diagnostic(&s->message_storage,p,n,enc,en,missing,&stage);
  if(h&&wa_history_delete_request(h)[0]){
   uint64_t low=0;wa_pb_varint_field(p,n,110,&low);
-  trace(s,"APP_STATE_WRITE_BASE version=%llu received_version=%llu collection=%s",
+  trace(s,!strcmp(wa_history_delete_request(h),WA_STATE_REBUILD_REQUEST)?"APP_STATE_REBUILD_BASE version=%llu received_version=%llu collection=%s":"APP_STATE_WRITE_BASE version=%llu received_version=%llu collection=%s",
    (unsigned long long)wa_history_version(h),
    (unsigned long long)wa_state_version(&s->message_storage,low!=0),low?"regular_low":"regular_high");
  }
@@ -406,7 +406,7 @@ wa_history *wa_pair_history_open(wa_pair_session *s,const uint8_t *p,size_t n,co
    stage,missing&&missing[0]!=0,wa_history_job_kind(p,n),low?"regular_low":"regular_high",
    (unsigned long long)wa_history_job_order(p,n),
    (unsigned long long)wa_state_version(&s->message_storage,low!=0),n,en);
-  if(!strcmp(stage,"version-gap-low"))wa_messenger_recover_state(s->messenger,1);
+  if(!strcmp(stage,"version-gap-low")||!strcmp(stage,"rebuild-stale-version"))wa_messenger_recover_state(s->messenger,1);
   else if(!strcmp(stage,"version-gap-high"))wa_messenger_recover_state(s->messenger,0);
  }
  return h;

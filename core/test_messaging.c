@@ -29,6 +29,14 @@ int main(void){
  wa_storage a,b,p;assert(wa_storage_posix(&a,pa)&&wa_storage_posix(&b,pbdir)&&wa_storage_posix(&p,pp));wa_identity ai,bi,pi;assert(wa_identity_generate(&ai)&&wa_identity_generate(&bi)&&wa_identity_generate(&pi));
  strcpy(ai.jid,"34111111111:1@s.whatsapp.net");memcpy(ai.account,"synthetic-certificate",21);ai.account_len=21;
  capture c={0};wa_messenger *m=wa_messenger_create(&ai,&a,"11111111:1@lid",capture_node,&c);wa_signal *bob=wa_signal_create(&bi,&b),*primary=wa_signal_create(&pi,&p);assert(m&&bob&&primary);
+ /* An existing receive cursor is not evidence that archive/pin rows exist.
+  * Request a one-time full low-state recovery, without resetting that cursor. */
+ assert(m->rebuild&&wa_messenger_write_pending(m,WA_STATE_REBUILD_REQUEST));
+ m->ready=1;m->sync_due[0]=100000;m->sync_due[1]=0;
+ wa_messenger_tick(m,1);
+ wa_tree *recovery=captured(&c);wa_node *recovery_collection=wa_node_child(wa_node_child(recovery->root,"sync"),"collection");
+ assert(recovery_collection&&!strcmp(wa_node_get(recovery_collection,"name"),"regular_low")&&!strcmp(wa_node_get(recovery_collection,"version"),"0")&&!strcmp(wa_node_get(recovery_collection,"return_snapshot"),"true"));
+ wa_tree_free(recovery);m->sync_query[0]=0;m->ready=0;m->now=0;m->sync_due[0]=m->sync_due[1]=0;
  assert(!wa_messenger_write_pending(m,"expired"));
  strcpy(m->delete_id,"write");strcpy(m->delete_snapshot,"snapshot");
  assert(wa_messenger_write_pending(m,"snapshot")&&!wa_messenger_write_pending(m,"other"));

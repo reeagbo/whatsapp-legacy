@@ -1,5 +1,16 @@
 # Continuidad del proyecto — 6 de noviembre de 2026
 
+## Actualización 0.39-debug: recuperar fijados y archivo existentes
+
+- El usuario confirma muchos más grupos visibles en 0.38, pero faltan estados de fijado/archivo.
+- Log real whatsapp-legacy-0.38-debug-20261106-174831.txt (libfile_dae053c6e9c88191993e7df5eac81611): 24 resúmenes, lista de 24 grupos y 0 fijados; inicio de regular_low en versión 185, solo deltas hasta 187, ningún GROUP_SYNC_ROW pin/history-pin ni SYNC_CHAT_ARCHIVE. La lista no recibe el estado anterior completo.
+- Recuperación única de regular_low cuando falta el marcador durable state-low-projection-v1: consulta versión cero con snapshot, reconstruye mapa autenticado con todos los deltas, incluidas versiones ya recibidas, y aplica los estados finales aunque el cursor ya esté en esa versión.
+- No se rebaja el cursor ni se aplican páginas parciales. Una reconstrucción final anterior al cursor se rechaza y se vuelve a solicitar. Se conservan las protecciones de timestamp de SQLite frente a decisiones locales posteriores.
+- Slot y base separados de las operaciones salientes: history-task-12 y rebuild-base-low; las operaciones del usuario conservan sus slots/bases. La recuperación es reanudable y el marcador se escribe después de confirmar SQLite. Las páginas se verifican con los mismos HMAC, claves e integridad del mapa que las escrituras existentes.
+- Pruebas C99: instantánea vieja más deltas ya recibidos, pin de grupo y unarchive finales, manipulación rechazada, cursor más reciente rechazado, páginas sin estados intermedios, continuación, marcador solo tras commit y primera petición versión cero.
+- Log mejorado: APP_STATE_REBUILD_BASE, regular_low-rebuilt y contadores pins/archives por chunk confirmado.
+- Pruebas locales de C99 y SQLite aprobadas; compilación firmada ARM32 y Android CI pendientes. La corrección de estados reales debe confirmarse en el teléfono tras la entrega.
+
 ## Actualización 0.38-debug: visibilidad y sincronización de grupos
 
 - El usuario confirmó que los fijados individuales sí suben y se marcan correctamente. El fallo pendiente estaba en los grupos; no cambiar la ordenación de individuales.

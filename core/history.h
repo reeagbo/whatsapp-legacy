@@ -3,7 +3,9 @@
 #include "storage.h"
 #include "messaging.h"
 #define WA_HISTORY_PATCH_TASKS 8
-#define WA_HISTORY_TASKS (WA_HISTORY_PATCH_TASKS + 4)
+#define WA_HISTORY_TASKS (WA_HISTORY_PATCH_TASKS + 5)
+#define WA_STATE_REBUILD_REQUEST "legacy-rebuild-low"
+int wa_state_rebuild_needed(const wa_storage *);
 #define WA_HISTORY_NOTIFICATION_MAX (1024u*1024u)
 #define WA_HISTORY_DOWNLOAD_MAX (8u*1024u*1024u)
 #define WA_HISTORY_PLAIN_MAX (32u*1024u*1024u)

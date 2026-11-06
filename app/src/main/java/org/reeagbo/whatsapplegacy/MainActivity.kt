@@ -877,7 +877,7 @@ class MainActivity : Activity() {
                             active.requestSyncKey(it)
                         }
                         if(handle==0L)throw java.io.IOException("History integrity or format check failed")
-                        var importedMessages=0;var importedChats=0;var containsRequestedPeer=false
+                        var importedMessages=0;var importedChats=0;var importedPins=0;var importedArchives=0;var containsRequestedPeer=false
                         stage="sqlite"
                         db.historyTransaction {
                             while(true) {
@@ -900,10 +900,11 @@ class MainActivity : Activity() {
                                     }
                                     "delete", "edit" -> db.applyMessageMutation(e[2],e[1],e[4]=="1",e[0],time,e[3])
                                     "history-pin" -> { db.historyPinned(e[2],e[3].toLong()*1000);traceGroupSync("history-pin",e[2]) }
-                                    "pin" -> { db.setPinned(e[2],if(e[4]=="1")time else 0,time);traceGroupSync("pin",e[2]) }
+                                    "pin" -> { db.setPinned(e[2],if(e[4]=="1")time else 0,time);importedPins++;traceGroupSync("pin",e[2]) }
                                     "history-archive" -> db.historyArchived(e[2],e[4]=="1")
                                     "archive" -> {
                                         db.setArchived(e[2],e[4]=="1",time)
+                                        importedArchives++
                                         debugLog.add("SYNC_CHAT_ARCHIVE archived=${e[4]=="1"}")
                                     }
                                     "delete-chat", "clear-chat" -> {
@@ -919,7 +920,7 @@ class MainActivity : Activity() {
                         // Only a committed complete chunk may remove its durable task.
                         stage="acknowledge"
                         val confirmed=active.historyDone(slot,task,nativeHistoryVersion(handle))
-                        debugLog.add("HISTORY_CHUNK_COMMITTED chats=$importedChats messages=$importedMessages task_confirmed=$confirmed")
+                        debugLog.add("HISTORY_CHUNK_COMMITTED chats=$importedChats messages=$importedMessages pins=$importedPins archives=$importedArchives task_confirmed=$confirmed")
                         if(!confirmed)throw java.io.IOException("History task acknowledgement unavailable")
                         if(stateTask)active.deleteFromSnapshot(handle)
                     } catch(error: Exception) {

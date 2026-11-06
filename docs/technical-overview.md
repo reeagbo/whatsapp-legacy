@@ -430,3 +430,20 @@ The callback validates the target/account relationship, saves a mutation task, a
 JNI/native return success means an operation was accepted or queued at that boundary. It does not replace the corresponding server result, receipt, database commit, or task acknowledgement.
 
 New-number SMS/voice registration and group-creation dialogues are **not implemented in this baseline** and therefore have no invented exchanges documented here.
+
+
+### App-state projection recovery (0.39)
+
+A durable `regular_low` receive version does not prove that the SQLite archive
+and pin projections contain all records: older clients may have advanced the
+version while ignoring unsupported actions. If `state-low-projection-v1` is
+absent, the messenger requests version `0`, `return_snapshot=true`. Responses
+are grouped using the authenticated snapshot/delta reconstruction path, with
+request `legacy-rebuild-low`, dedicated slot 12 and `rebuild-base-low`. Each page
+verifies mutation MACs, contiguous versions, patch MACs and the complete record
+map hash. Intermediate pages emit no actions. The complete map must reach at
+least the durable receive cursor before archive/pin actions are emitted; the
+SQLite timestamp guards still apply. Only after SQLite commits does the native
+acknowledgement persist the completion marker and the monotonic receive cursor.
+A failed or interrupted recovery can restart without a new pairing or losing
+the outgoing operations' separate snapshots.

@@ -282,6 +282,52 @@ int main(void) {
   assert(wa_state_version(&io,1)==2);wa_history_free(h);
   assert(wa_history_done(&io,WA_HISTORY_PATCH_TASKS+3,stored,n));
   assert(io.put(io.user,"write-base-low",NULL,0));
+  /* Rebuild projection from an old snapshot and already committed deltas.
+   * Only the final authenticated map may emit state; the receive cursor stays. */
+  uint8_t rebuild_task[8192];size_t rebuild_n=0;
+  assert(put_number(101,1,rebuild_task,sizeof rebuild_task,&rebuild_n));
+  assert(put_number(110,1,rebuild_task,sizeof rebuild_task,&rebuild_n));
+  assert(put_bytes(109,(const uint8_t*)WA_STATE_REBUILD_REQUEST,strlen(WA_STATE_REBUILD_REQUEST),rebuild_task,sizeof rebuild_task,&rebuild_n));
+  assert(put_bytes(113,low_snapshot,ln,rebuild_task,sizeof rebuild_task,&rebuild_n));
+  wa_node *archive_patch=wa_node_child(wa_node_child(wa_node_child(archive->root,"sync"),"collection"),"patch");
+  assert(put_bytes(111,archive_patch->data,archive_patch->data_len,rebuild_task,sizeof rebuild_task,&rebuild_n));
+  assert(put_bytes(111,ap->data,ap->data_len,rebuild_task,sizeof rebuild_task,&rebuild_n));
+  big64(stored_version,3);assert(io.put(io.user,version_key(1),stored_version,8));
+  h=wa_history_open_sync(&io,rebuild_task,rebuild_n,NULL,0,NULL);
+  assert(h&&wa_history_version(h)==3&&h->action_count==1);
+  wa_tree *group_pin=wa_history_delete_patch(h,&io,"pin-group","120363000000001@g.us","",0,0,1700000005000ULL,3);
+  assert(group_pin);wa_history_free(h);
+  wa_node *pin_patch=wa_node_child(wa_node_child(wa_node_child(group_pin->root,"sync"),"collection"),"patch");
+  assert(put_bytes(111,pin_patch->data,pin_patch->data_len,rebuild_task,sizeof rebuild_task,&rebuild_n));
+  big64(stored_version,4);assert(io.put(io.user,version_key(1),stored_version,8));
+  h=wa_history_open_sync(&io,rebuild_task,rebuild_n,NULL,0,NULL);
+  assert(h&&wa_history_version(h)==4&&h->action_count==2&&wa_state_rebuild_needed(&io));
+  int pins=0,archives=0;
+  while(wa_history_next(h,&e,&time)>0){
+   if(!strcmp(e.kind,"pin")){pins++;assert(e.state==1&&!strcmp(e.jid,"120363000000001@g.us"));}
+   if(!strcmp(e.kind,"archive")){archives++;assert(e.state==0);}
+  }
+  assert(pins==1&&archives==1&&wa_state_version(&io,1)==4);wa_history_free(h);
+  rebuild_task[rebuild_n-1]^=1;
+  assert(!wa_history_open_sync(&io,rebuild_task,rebuild_n,NULL,0,NULL));rebuild_task[rebuild_n-1]^=1;
+  big64(stored_version,5);assert(io.put(io.user,version_key(1),stored_version,8));
+  assert(!wa_history_open_sync(&io,rebuild_task,rebuild_n,NULL,0,NULL));
+  big64(stored_version,4);assert(io.put(io.user,version_key(1),stored_version,8));
+  assert(put_number(112,1,rebuild_task,sizeof rebuild_task,&rebuild_n));
+  h=wa_history_open_sync(&io,rebuild_task,rebuild_n,NULL,0,NULL);
+  assert(h&&h->action_count==0&&wa_history_write_more(h)&&wa_history_save_write_base(h,&io));wa_history_free(h);
+  // Continuation has no new deltas: final page imports the reconstructed map.
+  wa_tree *empty=wa_tree_create();wa_node *empty_collection=wa_node_add(empty,NULL,"collection");assert(empty_collection);
+  assert(write_state_task(&io,NULL,empty_collection,WA_STATE_REBUILD_REQUEST,1,0));wa_tree_free(empty);
+  assert(wa_history_task(&io,WA_HISTORY_TASKS-1,rebuild_task,sizeof rebuild_task,&rebuild_n)==1);
+  h=wa_history_open_sync(&io,rebuild_task,rebuild_n,NULL,0,NULL);
+  assert(h&&h->action_count==2&&!wa_history_write_more(h));wa_history_free(h);
+  assert(!wa_history_commit(&io,WA_HISTORY_TASKS-1,rebuild_task,rebuild_n,3));
+  assert(wa_state_rebuild_needed(&io));
+  assert(wa_history_commit(&io,WA_HISTORY_TASKS-1,rebuild_task,rebuild_n,4));
+  assert(!wa_state_rebuild_needed(&io)&&wa_state_version(&io,1)==4);
+  assert(io.put(io.user,"state-low-projection-v1",NULL,0)&&io.put(io.user,"rebuild-base-low",NULL,0));
+  wa_tree_free(group_pin);
   wa_tree_free(archive);wa_tree_free(unarchive);
   assert(io.put(io.user,version_key(1),NULL,0));
  }

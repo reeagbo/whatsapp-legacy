@@ -80,6 +80,11 @@ uint64_t wa_state_version(const wa_storage *io,int low) {
  for(unsigned i=0;i<8;i++)v=(v<<8)|bytes8[i];
  return v;
 }
+int wa_state_rebuild_needed(const wa_storage *io) {
+ uint8_t marker=0;size_t n=0;
+ return !io||io->get(io->user,"state-low-projection-v1",&marker,1,&n)!=1||n!=1||marker!=1;
+}
+static int rebuild_request(const char *request){return request&&!strcmp(request,WA_STATE_REBUILD_REQUEST);}
 static int key_file(wa_slice id,char out[80]) {
  uint8_t digest[32];
  if(!id.len||id.len>64||!SHA256(id.ptr,id.len,digest))return 0;
@@ -160,14 +165,14 @@ static int write_state_task(const wa_storage *io,const wa_node *snapshot,const w
  if(ok&&snapshot)ok=blob_ref((wa_slice){snapshot->data,snapshot->data_len},task,WA_HISTORY_NOTIFICATION_MAX,&n);
  else if(ok){
   uint8_t *base=malloc(WA_HISTORY_NOTIFICATION_MAX);size_t size=0;
-  ok=base&&io->get(io->user,low?"write-base-low":"write-base-high",base,WA_HISTORY_NOTIFICATION_MAX,&size)==1
+  ok=base&&io->get(io->user,rebuild_request(request)?"rebuild-base-low":low?"write-base-low":"write-base-high",base,WA_HISTORY_NOTIFICATION_MAX,&size)==1
    &&put_bytes(113,base,size,task,WA_HISTORY_NOTIFICATION_MAX,&n);
   if(base){OPENSSL_cleanse(base,WA_HISTORY_NOTIFICATION_MAX);free(base);}
  }
  const wa_node *patches=wa_node_child(collection,"patches");
  for(const wa_node *p=patches?patches->child:collection->child;p&&ok;p=p->next)
   if(!strcmp(p->tag,"patch"))ok=put_bytes(111,p->data,p->data_len,task,WA_HISTORY_NOTIFICATION_MAX,&n);
- if(ok){char name[32];key(WA_HISTORY_PATCH_TASKS+2+(unsigned)low,name);ok=io->put(io->user,name,task,n);}
+ if(ok){char name[32];key(rebuild_request(request)?WA_HISTORY_TASKS-1:WA_HISTORY_PATCH_TASKS+2+(unsigned)low,name);ok=io->put(io->user,name,task,n);}
  OPENSSL_cleanse(task,WA_HISTORY_NOTIFICATION_MAX);free(task);return ok;
 }
 int wa_state_collect(const wa_storage *io,const wa_node *result,const char *request,int low) {
@@ -560,13 +565,20 @@ static int replay_write_snapshot(wa_history *h,const wa_storage *io,wa_slice tas
  HMAC_CTX_free(seal_ctx);OPENSSL_cleanse(seal_keys,sizeof seal_keys);
  if(!built){free(plain);goto done;}
  OPENSSL_cleanse(h->plain,h->size);free(h->plain);h->plain=plain;h->size=n;
- memcpy(h->snapshot_hash,hash,sizeof hash);h->action_count=0;ok=1;
+ memcpy(h->snapshot_hash,hash,sizeof hash);h->action_count=0;h->action_position=0;ok=1;
+ if(rebuild_request(h->delete_request)&&!h->write_more){
+  *stage="rebuild-stale-version";
+  if(h->state_version<wa_state_version(io,1)){ok=0;goto done;}
+  // Import only the final authenticated record map, never intermediate pages.
+  *stage="rebuild-records";
+  ok=state_records(h,io,(wa_slice){h->plain,h->size},2,1,NULL,NULL,missing,stage);
+ }
  done:free(records);return ok;
 }
 int wa_history_write_more(const wa_history *h){return h&&h->write_more;}
 int wa_history_save_write_base(const wa_history *h,const wa_storage *io){
  return h&&h->delete_request[0]&&h->size<=WA_HISTORY_NOTIFICATION_MAX
-  &&io->put(io->user,h->low?"write-base-low":"write-base-high",h->plain,h->size);
+  &&io->put(io->user,rebuild_request(h->delete_request)?"rebuild-base-low":h->low?"write-base-low":"write-base-high",h->plain,h->size);
 }
 static int replace_snapshot_value(wa_slice snapshot,const uint8_t index_mac[32],uint8_t hash[128]){
  reader r={snapshot.ptr,snapshot.len,0};unsigned f,w;uint64_t v;wa_slice record,index,value;int k;
@@ -786,14 +798,18 @@ int wa_history_commit(const wa_storage *io,unsigned slot,const uint8_t *p,size_t
  int kind=wa_history_job_kind(p,n),low=number((wa_slice){p,n},110)==1;
  wa_slice write_request;
  int write_base=bytes((wa_slice){p,n},109,&write_request);
+ int rebuild=low&&write_base&&write_request.len==strlen(WA_STATE_REBUILD_REQUEST)&&!memcmp(write_request.ptr,WA_STATE_REBUILD_REQUEST,write_request.len);
+ int completed=rebuild&&!number((wa_slice){p,n},112);
+ if(completed&&version<wa_state_version(io,1))return 0;
  /* A write-base replay authenticates metadata, but does not import actions
   * into the database. Only normal incoming sync may advance its cursor. */
- if(!write_base&&(kind==1||kind==2)&&version>wa_state_version(io,low)){
+ if((!write_base||completed)&&(kind==1||kind==2)&&(version>wa_state_version(io,low)||completed)){
   uint8_t *stored=malloc(n);if(!stored)return 0;
   size_t size=0;int matches=wa_history_task(io,slot,stored,n,&size)==1&&size==n&&!CRYPTO_memcmp(p,stored,n);
   OPENSSL_cleanse(stored,n);free(stored);if(!matches)return 0;
   uint8_t data[8];big64(data,version);
   if(!io->put(io->user,version_key(low),data,sizeof data))return 0;
+  if(completed){uint8_t marker=1;if(!io->put(io->user,"state-low-projection-v1",&marker,1))return 0;}
  }
  return wa_history_done(io,slot,p,n);
 }
