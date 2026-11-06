@@ -1,5 +1,5 @@
 plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
-def targetAbi = providers.gradleProperty('targetAbi').getOrElse('arm64-v8a')
+def targetAbi = providers.gradleProperty('targetAbi').getOrElse('armeabi-v7a')
 if (!(targetAbi in ['armeabi-v7a', 'arm64-v8a', 'x86_64'])) {
     throw new GradleException("Unsupported targetAbi: ${targetAbi}")
 }
@@ -11,8 +11,8 @@ android {
         applicationId 'org.reeagbo.whatsapplegacy'
         minSdk 21
         targetSdk 35
-        versionCode 31
-        versionName '0.31-debug'
+        versionCode 32
+        versionName '0.32-debug'
         ndk { abiFilters targetAbi }
         externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_static' } }
     }

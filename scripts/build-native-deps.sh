@@ -15,7 +15,7 @@ fi
 # Default to the architecture currently distributed to phones.
 # CI explicitly supplies x86_64 as well for its emulator-only build.
 abis=("$@")
-if [ "${#abis[@]}" -eq 0 ]; then abis=(arm64-v8a); fi
+if [ "${#abis[@]}" -eq 0 ]; then abis=(armeabi-v7a); fi
 for abi in "${abis[@]}"; do
   case "$abi" in
     armeabi-v7a|arm64-v8a|x86_64) ;;

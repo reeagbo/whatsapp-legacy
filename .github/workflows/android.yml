@@ -43,7 +43,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            native-deps/arm64-v8a
+            native-deps/armeabi-v7a
             native-deps/x86_64
             native-deps/signal
           key: native-ndk27-openssl3-${{ hashFiles('scripts/build-native-deps.sh', 'core/deps/*.gz') }}
@@ -62,22 +62,22 @@ jobs:
       - name: Build OpenSSL and prepare Signal sources
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
-        run: bash scripts/build-native-deps.sh arm64-v8a x86_64
-      - name: Build ARM64 APK and run Android checks
+        run: bash scripts/build-native-deps.sh armeabi-v7a x86_64
+      - name: Build ARM32 APK and run Android checks
         run: gradle --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
-      - name: Verify and preserve ARM64 delivery
+      - name: Verify and preserve ARM32 delivery
         run: |
           python - <<'PY'
           from pathlib import Path
           import shutil
           import zipfile
-          apk = Path('app/build/outputs/apk/debug/whatsapp-legacy-0.31-debug-arm64-v8a.apk')
+          apk = Path('app/build/outputs/apk/debug/whatsapp-legacy-0.32-debug-armeabi-v7a.apk')
           with zipfile.ZipFile(apk) as package:
               abis = {name.split('/')[1] for name in package.namelist() if name.startswith('lib/') and name.endswith('.so')}
-              assert abis == {'arm64-v8a'}, abis
+              assert abis == {'armeabi-v7a'}, abis
           Path('delivery').mkdir(exist_ok=True)
           shutil.copy2(apk, Path('delivery') / apk.name)
-          print(f'ARM64 APK: {apk.stat().st_size:,} bytes; architectures: {abis}')
+          print(f'ARM32 APK: {apk.stat().st_size:,} bytes; architectures: {abis}')
           PY
       - name: Build emulator-only APK
         run: gradle --no-daemon -PtargetAbi=x86_64 :app:assembleDebug
@@ -95,7 +95,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: |
-            adb install app/build/outputs/apk/debug/whatsapp-legacy-0.31-debug-x86_64.apk
+            adb install app/build/outputs/apk/debug/whatsapp-legacy-0.32-debug-x86_64.apk
             python scripts/ui-smoke.py
       - name: Upload UI verification screenshots
         if: always()
@@ -106,7 +106,7 @@ jobs:
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
-          name: whatsapp-legacy-0.31-debug-arm64-v8a
+          name: whatsapp-legacy-0.32-debug-armeabi-v7a
           path: delivery/whatsapp-legacy-*.apk
           if-no-files-found: error
           retention-days: 30
