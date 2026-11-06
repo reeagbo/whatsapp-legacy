@@ -827,6 +827,11 @@ int wa_history_next(wa_history *h,wa_message_event *e,uint64_t *time){if(!h||!e|
     if(strstr(h->jid,"@s.whatsapp.net")&&str(h->chat,42,lid,sizeof lid)&&address(lid)&&strstr(lid,"@lid")){strcpy(e->kind,"alias");strcpy(e->id,lid);strcpy(e->jid,h->jid);return 1;}
    }
    if(h->chat_stage==1){h->chat_stage++;strcpy(e->kind,"chat");strcpy(e->jid,h->jid);if(!str(h->chat,38,e->text,sizeof e->text))str(h->chat,13,e->text,sizeof e->text);uint64_t sec=number(h->chat,12);if(!sec)sec=number(h->chat,5);if(sec<=253402300799ULL)*time=sec*1000;return 1;}
+   if(h->chat_stage==2){h->chat_stage++;
+    unsigned f,w;wa_slice b;uint64_t v;reader fields={h->chat.ptr,h->chat.len,0};int k;
+    while((k=next(&fields,&f,&w,&b,&v))>0)if(f==16&&w==0){strcpy(e->kind,"history-archive");strcpy(e->jid,h->jid);e->state=v!=0;return 1;}
+    if(k<0)return -1;
+   }
    unsigned f,w;wa_slice b;uint64_t v;int k;
    while((k=next(&h->conversations,&f,&w,&b,&v))>0)if(f==2&&w==2&&message(b,h->jid,h->chat,e,time))return 1;
    if(k<0)return -1;h->chat.ptr=NULL;

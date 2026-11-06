@@ -76,7 +76,7 @@ int main(void) {
  }
  assert(wa_messenger_node(m,t->root)&&m->group_listing);wa_tree_free(t);
  unsigned total=0;const wa_message_event *summary;
- while((summary=wa_messenger_event(m))){if(!strcmp(summary->kind,"group")){assert(summary->state==1);total++;}wa_messenger_event_done(m);}
+ while((summary=wa_messenger_event(m))){if(!strcmp(summary->kind,"group")){assert(summary->state==2&&!strcmp(summary->id,"summary"));total++;}wa_messenger_event_done(m);}
  assert(total==100&&!m->group_listing&&!m->group_next);
  /* User create takes priority; late refresh cannot complete/cancel it. */
  assert(wa_messenger_group(m,0,"","",""));char background[96];strcpy(background,m->group_query);
@@ -84,6 +84,17 @@ int main(void) {
  t=captured(&c);wa_node *create=wa_node_child(t->root,"create");const char *creation_key=wa_node_get(create,"key");assert(creation_key&&strlen(creation_key)==32&&strspn(creation_key,"0123456789ABCDEF")==32);wa_tree_free(t);
  t=iq("result",background,NULL);assert(wa_messenger_node(m,t->root)&&!strcmp(m->group_query,query));wa_tree_free(t);
  t=iq("result",query,NULL);group_fixture(t,t->root,"Priority group");assert(wa_messenger_node(m,t->root)&&!m->group_query[0]);wa_tree_free(t);clear_events(m);
+ /* Notifications invalidate cached members and an older in-flight read. */
+ assert(wa_messenger_group(m,3,gid,"",""));strcpy(query,m->group_query);
+ t=wa_tree_create();wa_node *notice=wa_node_add(t,NULL,"notification");
+ assert(wa_node_attr(notice,"type","w:gp2")&&wa_node_attr(notice,"from",gid)&&wa_node_attr(notice,"id","changed"));
+ wa_node *removed=wa_node_add(t,notice,"remove"),*participant=wa_node_add(t,removed,"participant");
+ assert(wa_node_attr(participant,"jid","11111111@lid"));assert(wa_messenger_node(m,notice));wa_tree_free(t);
+ assert(!m->group_query[0]);int dirty=0,left=0;
+ for(size_t j=0;j<m->event_count;j++){dirty+=!strcmp(m->events[j].kind,"group-dirty");left+=!strcmp(m->events[j].kind,"group-left");}
+ assert(dirty==1&&left==1);clear_events(m);
+ t=iq("result",query,NULL);group_fixture(t,t->root,"Obsolete");assert(wa_messenger_node(m,t->root));wa_tree_free(t);
+ for(size_t j=0;j<m->event_count;j++)assert(strcmp(m->events[j].kind,"group"));
  wa_signal_free(bob);wa_messenger_free(m);wa_storage_posix_close(&a);wa_storage_posix_close(&b);cleanup(pa);cleanup(pbdir);rmdir(dir);
  puts("PASS: group create/metadata/leave IQs, current membership discovery, pairwise key distribution, skmsg roundtrip, author inbox persistence, tamper/duplicate rejection and pre-commit storage failure retry");return 0;
 }

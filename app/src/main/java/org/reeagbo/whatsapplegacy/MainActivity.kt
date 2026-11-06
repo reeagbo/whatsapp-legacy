@@ -545,8 +545,22 @@ class MainActivity : Activity() {
             }
         } };dialog.show()
     }
+    private val dirtyGroups=linkedSetOf<String>()
+    private var groupRefreshInFlight: String?=null
+    private var groupInfoDialog: AlertDialog?=null
+    private var groupInfoPeer: String?=null
+    private fun refreshDirtyGroup() {
+        if(!connected || groupRefreshInFlight!=null)return
+        val jid=dirtyGroups.firstOrNull() ?: return
+        if(connection?.group(3,jid)==true) { dirtyGroups.remove(jid);groupRefreshInFlight=jid }
+    }
     private fun groupInfo(jid: String) {
         connection?.group(3,jid)
+        renderGroupInfo(jid)
+    }
+    private fun renderGroupInfo(jid: String) {
+        groupInfoDialog?.setOnDismissListener(null)
+        groupInfoDialog?.dismiss()
         val rows=column().apply { setPadding(dp(20),dp(12),dp(20),dp(12)) }
         if(store.groupLeft(jid))rows.addView(label("Ya no participas en este grupo",16f,muted))
         val members=store.groupMembers(jid)
@@ -556,7 +570,11 @@ class MainActivity : Activity() {
         if(!store.groupLeft(jid))dialog.setPositiveButton("Salir del grupo") { _,_ ->
             if(connection?.group(2,jid)!=true)Toast.makeText(this,"No se pudo iniciar la salida; revisa la conexión",Toast.LENGTH_LONG).show()
         }
-        dialog.show()
+        groupInfoPeer=jid
+        groupInfoDialog=dialog.create().apply {
+            setOnDismissListener { groupInfoPeer=null;groupInfoDialog=null }
+            show()
+        }
     }
     private fun showChat(jid: String) {
         selectedChats.clear();conversationScroll=null
@@ -691,7 +709,7 @@ class MainActivity : Activity() {
         for(e in events) {
             if(e.size<5)continue;val state=e[4].toIntOrNull()?:0
             when(e[0]) {
-                "ready" -> { connected=true;statusText="Conectado · texto cifrado";reconnectPolicy.connected(SystemClock.elapsedRealtime()) }
+                "ready" -> { groupRefreshInFlight?.let { dirtyGroups.add(it) };groupRefreshInFlight=null;connected=true;statusText="Conectado · texto cifrado";reconnectPolicy.connected(SystemClock.elapsedRealtime()) }
                 "status" -> if(e[1]==historyRequestId) {
                     debugLog.add("HISTORY_REQUEST_STATUS state=$state")
                     if(state<0)finishHistoryPage(false)
@@ -716,7 +734,7 @@ class MainActivity : Activity() {
                 }
                 "alias-conflict", "alias-storage" -> debugLog.add("CONTACT_MAPPING kind=${e[0]}")
                 "group" -> {
-                    store.updateGroup(e[2],e[3],state==1,e[1]=="created")
+                    store.updateGroup(e[2],e[3],if(state==2)null else state==1,e[1]=="created")
                     if(e[1]=="created") {
                         creatingGroup=false
                         debugLog.add("GROUP_CREATION_UI_CONFIRMED")
@@ -726,8 +744,13 @@ class MainActivity : Activity() {
                 "group-members" -> store.setGroupMembers(e[2],e[3].lineSequence().filter { it.isNotBlank() }.joinToString("\n") { line ->
                     val parts=line.split('\t');authorPeer(parts[0])+"\t"+parts.getOrElse(1){"0"}
                 })
+                "group-dirty" -> {
+                    store.setGroupMembers(e[2],"")
+                    dirtyGroups.add(e[2])
+                }
                 "group-left" -> store.leaveGroup(e[2])
                 "group-result" -> {
+                    if(e[2]==groupRefreshInFlight)groupRefreshInFlight=null
                     debugLog.add("GROUP_OPERATION_RESULT state=$state")
                     if(creatingGroup && state!=0) {
                         creatingGroup=false
@@ -739,6 +762,8 @@ class MainActivity : Activity() {
                 "notice" -> debugLog.add("MESSAGING_NOTICE state=$state detail=${e[3]}")
             }
         }
+        if(events.any { it.firstOrNull() in listOf("group","group-members","group-left","group-dirty") })groupInfoPeer?.let { renderGroupInfo(it) }
+        refreshDirtyGroup()
         updateStatusLabel()
         refreshConversation()
         scheduleContacts()
@@ -856,6 +881,7 @@ class MainActivity : Activity() {
                                             containsRequestedPeer=true
                                     }
                                     "delete", "edit" -> db.applyMessageMutation(e[2],e[1],e[4]=="1",e[0],time,e[3])
+                                    "history-archive" -> db.historyArchived(e[2],e[4]=="1")
                                     "archive" -> {
                                         db.setArchived(e[2],e[4]=="1",time)
                                         debugLog.add("SYNC_CHAT_ARCHIVE archived=${e[4]=="1"}")

@@ -46,6 +46,18 @@ class GroupCreationInstrumentation : Instrumentation() {
                     events.invoke(target,listOf(arrayOf("group","created",jid,"Grupo sintético","1","0","")))
                     completed()
                     check(get("conversation")==jid)
+                    val store=get("store") as ChatStore
+                    store.leaveGroup(jid)
+                    events.invoke(target,listOf(arrayOf("group","summary",jid,"Resumen tardío","2","0","")))
+                    check(store.groupLeft(jid))
+                    store.setArchived(jid,true,100)
+                    store.historyArchived(jid,false)
+                    check(store.chat(jid)?.archived==true)
+                    val bootstrap="120363000000098@g.us"
+                    store.historyArchived(bootstrap,true)
+                    check(store.chat(bootstrap)?.archived==true)
+                    events.invoke(target,listOf(arrayOf("group","",jid,"Miembros actuales","1","0","")))
+                    check(!store.groupLeft(jid))
                     // Error and timeout must also restore connection status.
                     for(state in listOf("-1","-2")) {
                         begin()

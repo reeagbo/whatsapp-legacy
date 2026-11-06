@@ -20,6 +20,18 @@ static void overwrite_query_stack(void) {
 }
 static void (*volatile reuse_query_stack)(void)=overwrite_query_stack;
 int main(void) {
+ /* Conversation.archived is optional; preserve both true and explicit false. */
+ for(int archived=0;archived<3;archived++){
+  uint8_t conversation[256],root[300];size_t cn=0,rn=0;
+  assert(put_bytes(1,(const uint8_t*)"123@g.us",8,conversation,sizeof conversation,&cn));
+  if(archived<2)assert(put_number(16,archived,conversation,sizeof conversation,&cn));
+  assert(put_bytes(2,conversation,cn,root,sizeof root,&rn));
+  wa_history fixture={0};fixture.root=(reader){root,rn,0};wa_message_event event;uint64_t stamp;
+  assert(wa_history_next(&fixture,&event,&stamp)==1&&!strcmp(event.kind,"chat"));
+  if(archived<2)assert(wa_history_next(&fixture,&event,&stamp)==1&&!strcmp(event.kind,"history-archive")&&event.state==archived&&stamp==0);
+  assert(wa_history_next(&fixture,&event,&stamp)==0);
+ }
+
  /* A real unsupported shape must identify its exact field without exposing
   * key IDs or record bytes in the diagnostic. */
  {

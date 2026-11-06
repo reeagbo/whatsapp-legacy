@@ -7,7 +7,7 @@ static void groups_pump(wa_messenger *m) {
   const char *id=wa_node_get(g,"id"),*subject=wa_node_get(g,"subject");char jid[128];
   if(strcmp(g->tag,"group")||!id||strlen(id)>100||!subject||strlen(subject)>256||!utf8((const uint8_t*)subject,strlen(subject)))continue;
   snprintf(jid,sizeof jid,strchr(id,'@')?"%s":"%s@g.us",id);
-  if(is_group(jid))event(m,"group","",jid,subject,1);
+  if(is_group(jid))event(m,"group","summary",jid,subject,2);
  }
  if(m->group_listing&&!m->group_next){wa_tree_free(m->group_listing);m->group_listing=NULL;}
 }
@@ -89,6 +89,15 @@ static int groups_node(wa_messenger *m,const wa_node *node) {
  if(!strcmp(node->tag,"notification")&&type&&!strcmp(type,"w:gp2")){
   const char *from=wa_node_get(node,"from");
   if(is_group(from)){
+   if(m->event_count>EVENTS-5)return -1;
+   /* Discard a read started before this membership/subject change. */
+   if(m->group_query[0]&&m->group_action==3&&!strcmp(from,m->group_target)){
+    m->group_query[0]=0;m->group_deadline=0;
+    event(m,"group-result","",from,"",0);
+   }
+   if(m->pending&&m->group_mode&&!strcmp(from,m->peer))
+    error(m,"El grupo cambió durante el envío. Comprueba el resultado antes de reintentar.");
+   event(m,"group-dirty","",from,"",0);
    const wa_node *remove=wa_node_child(node,"remove");
    for(const wa_node *p=remove?remove->child:NULL;p;p=p->next){char peer[128];if(base(wa_node_get(p,"jid"),peer)&&(!strcmp(peer,m->own)||!strcmp(peer,m->lid)))event(m,"group-left","",from,"",1);}
   }

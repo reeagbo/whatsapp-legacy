@@ -78,6 +78,11 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         db.execSQL("UPDATE chats SET archived=?,archived_changed=? WHERE jid=? AND archived_changed<=?",
             arrayOf(if(archived)1 else 0,changed,peer,changed))
     }
+    fun historyArchived(jid: String, archived: Boolean) = historyTransaction {
+        val peer=resolve(jid)
+        addChat(peer,updated=0)
+        writableDatabase.execSQL("UPDATE chats SET archived=? WHERE jid=? AND archived_changed=0",arrayOf(if(archived)1 else 0,peer))
+    }
     fun chat(jid: String): Chat? = queryChats(resolve(jid)).firstOrNull()
     private fun queryChats(jid: String?, archived: Boolean? = null): List<Chat> = readableDatabase.rawQuery(
         "SELECT c.jid,c.name,COALESCE((SELECT text FROM messages m WHERE m.peer=c.jid ORDER BY time DESC,rowid DESC LIMIT 1),''),c.updated,COALESCE((SELECT name FROM contact_names n WHERE n.jid=c.jid),''),c.archived FROM chats c WHERE (?='' AND (CAST(? AS INTEGER) IN (-1,c.archived)) AND (EXISTS(SELECT 1 FROM messages m WHERE m.peer=c.jid) OR EXISTS(SELECT 1 FROM group_metadata g WHERE g.jid=c.jid AND g.visible=1))) OR c.jid=? ORDER BY c.updated DESC", arrayOf(jid.orEmpty(),when(archived) { true -> "1"; false -> "0"; null -> "-1" },jid.orEmpty())
@@ -279,11 +284,11 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         db.execSQL("CREATE TABLE group_metadata(jid TEXT PRIMARY KEY, members TEXT NOT NULL DEFAULT '',left_group INTEGER NOT NULL DEFAULT 0,visible INTEGER NOT NULL DEFAULT 0)")
         db.execSQL("CREATE TABLE message_authors(peer TEXT NOT NULL,id TEXT NOT NULL,outgoing INTEGER NOT NULL,author TEXT NOT NULL,PRIMARY KEY(peer,id,outgoing))")
     }
-    fun updateGroup(jid: String, subject: String, joined: Boolean, created: Boolean) = historyTransaction {
+    fun updateGroup(jid: String, subject: String, joined: Boolean?, created: Boolean) = historyTransaction {
         addChat(jid,updated=0)
         learnName(jid,subject)
         writableDatabase.execSQL("INSERT OR IGNORE INTO group_metadata(jid) VALUES(?)",arrayOf(jid))
-        writableDatabase.execSQL("UPDATE group_metadata SET left_group=?,visible=MAX(visible,?) WHERE jid=?",arrayOf(if(joined)0 else 1,if(created)1 else 0,jid))
+        writableDatabase.execSQL("UPDATE group_metadata SET left_group=COALESCE(?,left_group),visible=MAX(visible,?) WHERE jid=?",arrayOf(joined?.let { if(it)0 else 1 },if(created)1 else 0,jid))
     }
     fun groupMembers(jid: String): List<Pair<String,Boolean>> = readableDatabase.rawQuery(
         "SELECT members FROM group_metadata WHERE jid=?",arrayOf(jid)
