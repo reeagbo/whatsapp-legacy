@@ -2,12 +2,16 @@
 
 ## Actualización 0.41-debug: interfaz What!
 
+- Entrega completada: commit a05aa763b3e18bdc473c73c52e902f4ba5082d9e.
+- CI completo: https://github.com/reeagbo/whatsapp-legacy/actions/runs/42268462269
+- Descarga: https://github.com/reeagbo/whatsapp-legacy/actions/runs/42268462269/artifacts/13527738015
+- APK whatsapp-legacy-0.41-debug-armeabi-v7a.apk: 3.254.520 bytes; firma/contenido y certificado idéntico a 0.40 comprobados, solo ARM32. Library: libfile_c590a290991c8191967b7b71f016a5f2.
 - Aprobación del usuario: tono distinto para fijados; tres círculos en triángulo con vértice abajo para grupos; selección en barra superior de altura fija (opción a); título temporal What!; nuevo grupo junto a + y seleccionar todas en cabecera; menú anclado a los tres puntos. No modificar no leídos ni altura de vistas previas.
 - Cabecera normal y contextual comparten dimensiones: mismo alto de controles/paddings y línea de estado. Las acciones de selección sustituyen la cabecera, sin añadir una fila que desplace la lista; cancelar está en esa misma línea. Se mantienen selección múltiple y posición del scroll.
 - GlyphView dibuja símbolos con Canvas/rectas/círculos: sin fuentes de iconos, imágenes, dependencias de UI ni cambios del protocolo. Controles redondeados con zona 48x52 dp, descripciones accesibles y foco para teclado. Pinned usa wa_pinned, y selección conserva un tono más fuerte.
 - Menú PopupWindow compacto, alineado al botón, cerrado al navegar/destruir actividad. Las actualizaciones de lista se difieren mientras está abierto y se aplican al cerrar, sin hacer desaparecer el menú; los refrescos conservan el scroll. Nuevo grupo y seleccionar todas salen del menú para ocupar la cabecera de la lista. Etiqueta del lanzador: What!; paquete, firma y archivos de APK mantienen su identidad.
 - Pruebas de interfaz adaptadas: igualdad de posición de una fila antes/durante/después de selección, alineación vertical de controles, cancelar con cruz, nueva ubicación de seleccionar todas y nuevo grupo. Capturas de selección, menú anclado y grupos con/sin fijado.
-- SQLite local aprobado; compilación firmada ARM32, lint y regresiones de emulador pendientes al redactar. No hay cambios en estados leído/no leído, preview de mensajes ni en protocolo/sincronización.
+- SQLite y CI completo aprobados: C99, Android, unidad, lint, emulador e instrumentación. La prueba de igualdad de posición de las filas al seleccionar/cancelar pasó; revisión visual de capturas de grupos/fijados, selección y menú aprobada. No hay cambios en estados leído/no leído, preview de mensajes ni en protocolo/sincronización.
 
 ## Actualización 0.40-debug: límite de fijados y diagnóstico de salida
 
