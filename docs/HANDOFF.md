@@ -2,12 +2,16 @@
 
 ## Actualización 0.40-debug: límite de fijados y diagnóstico de salida
 
+- Entrega completada: commit funcional bd7c7e527bec7a112cbe58639ea0c291f7b46601.
+- CI completo: https://github.com/reeagbo/whatsapp-legacy/actions/runs/42261356030
+- Descarga: https://github.com/reeagbo/whatsapp-legacy/actions/runs/42261356030/artifacts/13525068353
+- APK whatsapp-legacy-0.40-debug-armeabi-v7a.apk: 3.250.860 bytes, firma/contenido verificados, certificado idéntico a 0.39 y solo ARM32. Library: libfile_44901303471c8191b3f8900ba439e256.
 - Log 0.39 real whatsapp-legacy-0.39-debug-20261106-181805.txt (libfile_c373eac136f481919e2cfaef9aa53fa7): recuperación completada en versión 187, 43 acciones pin y 48 archive confirmadas; lista principal de 24 a 4 grupos y 2 fijados. No confundir acciones pin con número de chats fijados: incluyen false.
 - El usuario confirma progreso pero cambios de pin desde Legacy no siempre aparecen en el principal. Aclaró que el fallo se observa en el principal; no sabe aún si afecta también a desfijar.
 - Cuatro operaciones salientes del log tienen CHAT_CHANGE_SYNC_RESULT state=1 (unpin, pin, unpin, pin); esto solo demuestra aceptación del servidor, no aplicación visual en el principal. La causa completa de la intermitencia no está confirmada.
 - Corregido defecto independiente: Legacy permitía superar tres chats fijados, límite documentado por WhatsApp (https://faq.whatsapp.com/645907560577342/). El lote que excede el límite de la lista principal se rechaza antes de tocar SQLite o la cola. Fijados de grupos e individuales cuentan juntos; desfijar libera plaza; no se limita el estado remoto importado.
 - Trazas PIN_LOCAL, PIN_SYNC_START y PIN_SYNC_APPLIED: referencia opaca del chat, valor deseado/recibido/efectivo y timestamp. PIN_LIMIT_BLOCKED registra intentos que exceden el límite. No se registran nombres, JID ni contenido.
-- Regresión de instrumentación: tres fijados entre grupos y un individual; un cuarto se bloquea sin cambio local ni cola; tras liberar una plaza, la misma selección se puede fijar. SQLite local aprobado. CI firmado ARM32 pendiente al redactar.
+- Regresión de instrumentación: tres fijados entre grupos y un individual; un cuarto se bloquea sin cambio local ni cola; tras liberar una plaza, la misma selección se puede fijar. SQLite local aprobado. CI completo firmado ARM32 aprobado, incluida la regresión de límite en instrumentación.
 - Próxima validación necesaria en cuenta real: fijar/desfijar el mismo chat desde Legacy y comprobar el principal; el nuevo log permite correlacionar cada operación sin depender de deducciones por recuentos de grupos.
 
 ## Actualización 0.39-debug: recuperar fijados y archivo existentes
