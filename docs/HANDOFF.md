@@ -7,8 +7,12 @@
 - Los resúmenes participating, las conversaciones de historial y los fijados de grupo hacen visible el chat sin exigir mensajes de texto importados. No se crean mensajes ficticios ni se infiere la salida del grupo por un resumen sin participantes.
 - SQLite v9 repara al actualizar los grupos ocultos ya guardados en v8. Respeta archivo y marcas de borrado: un resumen o historial anterior no resucita una conversación borrada; una actividad o fijado posterior sí puede hacerlo.
 - Trazas GROUP_SYNC_ROW (fuente y referencia opaca del grupo) y GROUP_SYNC_LIST (grupos visibles y fijados), sin nombres ni texto. Permiten distinguir llegada/importación de la lista final si aún faltan grupos reales.
-- Regresiones SQLite: migración con rollback, grupo sin texto, estado fijado, archivo, borrado y datos tardíos. Regresión Android ampliada: eventos summary reales hacia UI/almacenamiento, pin/unpin, borrado y reapertura de BD v8.
-- Validación local SQLite aprobada. Compilación firmada y validación completa de Android en GitHub Actions pendientes al redactar esta sección. ARM32 exclusivamente.
+- Regresiones SQLite: migración con rollback, grupo sin texto, estado fijado, archivo, borrado y datos tardíos. Regresión Android ampliada: eventos summary sintéticos hacia UI/almacenamiento, pin/unpin, borrado y reapertura de BD v8.
+- Entrega firmada ARM32 completada: commit funcional 2f369906e9edab626c281329457979584b8ced84.
+- CI completo aprobado (C99, SQLite, Android, unidad, lint, UI y migración v8-v9 instrumentada): https://github.com/reeagbo/whatsapp-legacy/actions/runs/42230019696
+- Descarga: https://github.com/reeagbo/whatsapp-legacy/actions/runs/42230019696/artifacts/13510205687
+- APK whatsapp-legacy-0.38-debug-armeabi-v7a.apk, 3.247.666 bytes. Verificados firma/contenido, certificado idéntico a 0.37 y arquitectura ARM32 única. Instalar como actualización.
+- Library de la APK firmada: libfile_6ab1e65055348191a9ba7a494881eee0.
 - Todavía hace falta validar los grupos de la cuenta real en el teléfono; no afirmar que todos llegan ni que el envío real de grupos está validado.
 
 ## Actualización 0.37-debug: fijados y orden
