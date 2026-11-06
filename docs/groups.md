@@ -1,4 +1,4 @@
-# Groups and contact selection — 0.33
+# Groups and contact selection — 0.34
 
 ## Local contact selection
 
@@ -19,7 +19,7 @@ The Kotlin/JNI boundary passes operation arguments and application events.
 
 | Operation | IQ destination/type | Namespace and content |
 |---|---|---|
-| Participating groups | `@g.us`, `get` | `w:g2`, `participating/participants` and `description` |
+| Participating groups | `@g.us`, `get` | `w:g2`, `participating` summary (no full rosters at startup) |
 | Group metadata | group JID, `get` | `w:g2`, `query request="interactive"` |
 | Create | `@g.us`, `set` | `w:g2`, `create subject="…" key="…"`, participant children |
 | Leave | `@g.us`, `set` | `w:g2`, `leave/group id="…@g.us"` |
@@ -94,3 +94,22 @@ Protocol shapes were checked against the Baileys source, especially
 `src/Socket/groups.ts`, `src/Socket/messages-send.ts`, and
 `src/Signal/libsignal.ts`. The implementation uses the bundled
 libsignal-protocol-c group builder/cipher rather than reimplementing its crypto.
+
+## Connection regression fixed in 0.34
+
+The original binary-node budget (256 nodes, 16 attributes) was too small for
+real group-list replies. Its rejection closed the authenticated connection.
+The parser now allocates fixed-address chunks as needed, with bounded maxima
+of 8,192 nodes and 32 attributes. Frame/decompression limits and authentication
+checks remain enforced. Small replies do not allocate the maximum node table.
+
+Startup requests group summaries. Full metadata is fetched when opening or
+sending to a particular group. Large summary lists drain through the bounded
+application event queue without silently dropping the remainder. User create,
+leave and metadata requests can supersede a background refresh; its late reply
+cannot complete the newer request. Create keys use random 32-character hex IDs.
+
+Regression tests include a 320-participant encrypted reply followed by another
+frame on the same session, a 100-group summary across queue boundaries, and a
+create request overtaking a background refresh. These reproduce the code defect;
+the user's exact disconnect cause still requires a current diagnostic log.

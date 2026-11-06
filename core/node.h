@@ -2,8 +2,9 @@
 #define WA_NODE_H
 #include <stddef.h>
 #include <stdint.h>
-#define WA_NODE_LIMIT 256
-#define WA_ATTR_LIMIT 16
+#define WA_NODE_LIMIT 8192
+#define WA_NODE_CHUNK 64
+#define WA_ATTR_LIMIT 32
 #define WA_NODE_BYTES (1024u * 1024u)
 typedef struct {
   const char *key, *value;
@@ -18,7 +19,8 @@ typedef struct wa_node {
   struct wa_node *child, *next;
 } wa_node;
 typedef struct {
-  wa_node nodes[WA_NODE_LIMIT];
+  /* Fixed-address chunks: growth never invalidates parent/child pointers. */
+  wa_node *nodes[WA_NODE_LIMIT / WA_NODE_CHUNK];
   size_t count;
   uint8_t *arena;
   size_t used;

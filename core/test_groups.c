@@ -65,6 +65,25 @@ int main(void) {
  assert(wa_signal_group_decrypt(m->signal,gid,"22222222:0@lid",gct,gn,plain,sizeof plain,&n,NULL,NULL)>=0);
  assert(wa_signal_group_decrypt(m->signal,gid,"22222222:0@lid",gct,gn,plain,sizeof plain,&n,NULL,NULL)<0);
  m->pending=0;assert(wa_messenger_group(m,2,gid,"",""));strcpy(query,m->group_query);t=iq("result",query,NULL);assert(wa_messenger_node(m,t->root));wa_tree_free(t);
+
+ /* A 100-group summary is drained across the bounded 64-event queue. */
+ clear_events(m);assert(wa_messenger_group(m,0,"","",""));strcpy(query,m->group_query);
+ t=captured(&c);assert(wa_node_child(t->root,"participating")&&!wa_node_child(t->root,"participating")->child);wa_tree_free(t);
+ t=iq("result",query,NULL);wa_node *groups=wa_node_add(t,t->root,"groups");
+ char ids[100][32];for(unsigned j=0;j<100;j++){
+  snprintf(ids[j],sizeof ids[j],"120363000%06u",j);wa_node *g=wa_node_add(t,groups,"group");
+  assert(g&&wa_node_attr(g,"id",ids[j])&&wa_node_attr(g,"subject","Summary without participants"));
+ }
+ assert(wa_messenger_node(m,t->root)&&m->group_listing);wa_tree_free(t);
+ unsigned total=0;const wa_message_event *summary;
+ while((summary=wa_messenger_event(m))){if(!strcmp(summary->kind,"group")){assert(summary->state==1);total++;}wa_messenger_event_done(m);}
+ assert(total==100&&!m->group_listing&&!m->group_next);
+ /* User create takes priority; late refresh cannot complete/cancel it. */
+ assert(wa_messenger_group(m,0,"","",""));char background[96];strcpy(background,m->group_query);
+ assert(wa_messenger_group(m,1,"","Priority group","22222222@lid"));strcpy(query,m->group_query);
+ t=captured(&c);wa_node *create=wa_node_child(t->root,"create");const char *creation_key=wa_node_get(create,"key");assert(creation_key&&strlen(creation_key)==32&&strspn(creation_key,"0123456789ABCDEF")==32);wa_tree_free(t);
+ t=iq("result",background,NULL);assert(wa_messenger_node(m,t->root)&&!strcmp(m->group_query,query));wa_tree_free(t);
+ t=iq("result",query,NULL);group_fixture(t,t->root,"Priority group");assert(wa_messenger_node(m,t->root)&&!m->group_query[0]);wa_tree_free(t);clear_events(m);
  wa_signal_free(bob);wa_messenger_free(m);wa_storage_posix_close(&a);wa_storage_posix_close(&b);cleanup(pa);cleanup(pbdir);rmdir(dir);
  puts("PASS: group create/metadata/leave IQs, current membership discovery, pairwise key distribution, skmsg roundtrip, author inbox persistence, tamper/duplicate rejection and pre-commit storage failure retry");return 0;
 }

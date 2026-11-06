@@ -70,7 +70,7 @@ static const char *safe_tag(const char *tag) {
   static const char *const names[] = {"iq", "pair-device", "pair-success", "device-identity",
     "device", "platform", "biz", "ref", "pair-device-sign", "link_code_companion_reg",
     "link_code_pairing_ref", "link_code_pairing_wrapped_key_bundle", "companion_identity_public",
-    "notification", "stream:error", "failure", "success", "error", "ack", "ib", "ping",
+    "groups", "group", "participant", "participating", "query", "create", "leave", "remove", "notification", "stream:error", "failure", "success", "error", "ack", "ib", "ping",
     "link_code_pairing_wrapped_companion_ephemeral_pub", "companion_server_auth_key_pub",
     "companion_platform_id", "companion_platform_display", "link_code_pairing_nonce",
     "primary_identity_pub", "link_code_pairing_wrapped_primary_ephemeral_pub", "edge_routing",
@@ -114,6 +114,7 @@ static void trace_node(wa_pair_session *s, const char *direction, const wa_node 
   const char *id = wa_node_get(n,"id");
   const char *kind = !id ? "none" : !strcmp(id,"legacy-pair-1") ? "pair-request" :
     !strcmp(id,"legacy-finish-1") ? "pair-finish" : !strncmp(id,"legacy-ping-",12) ? "ping" :
+    !strncmp(id,"legacy-group-",13) ? "group-control" :
     !strncmp(id,"legacy-state-",13) ? "app-state-read" :
     !strncmp(id,"legacy-snap-",12) ? "app-state-snapshot" :
     !strncmp(id,"legacy-delete-",14) ? "app-state-write" : "other";
@@ -916,8 +917,10 @@ static int frame(wa_pair_session *s, const uint8_t *in, size_t n) {
   wa_tree *t = wa_node_decode(plain, len);
   free(plain);
 
-  if (!t)
+  if (!t) {
+    trace(s,"NODE_DECODE_REJECT bytes=%zu node_limit=%d attribute_limit=%d",len,WA_NODE_LIMIT,WA_ATTR_LIMIT);
     return fail(s, "Respuesta binaria no compatible o malformada.");
+  }
   int ok = handle_node(s, t->root);
   wa_tree_free(t);
 

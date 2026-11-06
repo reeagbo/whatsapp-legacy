@@ -17,7 +17,8 @@ struct wa_messenger {
  char own[128],lid[128];
  int history_mode;
  int group_mode,group_lid;size_t member_count;char members[GROUP_MEMBERS][128];
- char group_query[96],group_target[128];int group_action;uint64_t group_deadline;unsigned group_sequence;int groups_due;
+ char group_query[96],group_target[128],group_key[33];
+ wa_tree *group_listing;const wa_node *group_next;int group_action;uint64_t group_deadline;unsigned group_sequence;int groups_due;
 
  uint64_t sync_due[2],last_key_request,sync_requested_version,sync_deadline;int sync_more,sync_low,sync_force[2];unsigned sync_sequence;char sync_query[48];
  int ready,boot,pending,phase;uint64_t now,deadline;
@@ -106,7 +107,7 @@ wa_messenger *wa_messenger_create(const wa_identity *id,const wa_storage *io,con
  }
  return m;
 }
-void wa_messenger_free(wa_messenger *m){if(!m)return;wa_signal_free(m->signal);wa_inbox_free(m->inbox);OPENSSL_cleanse(m,sizeof *m);free(m);}
+void wa_messenger_free(wa_messenger *m){if(!m)return;wa_tree_free(m->group_listing);wa_signal_free(m->signal);wa_inbox_free(m->inbox);OPENSSL_cleanse(m,sizeof *m);free(m);}
 int wa_messenger_start(wa_messenger *m){if(!m)return 0;
  if(!m->inbox_replayed){
   for(size_t j=0;j<wa_inbox_count(m->inbox);j++){
@@ -554,7 +555,7 @@ void wa_messenger_tick(wa_messenger *m,uint64_t now){if(!m)return;int first=m->n
  if(m->deadline&&now>=m->deadline){m->deadline=0;if(m->pending){event(m,"status",m->id,m->peer,m->phase==3?"Sin confirmación; el envío podría haberse aceptado":"La consulta agotó el tiempo",m->phase==3?-2:-1);m->pending=0;m->phase=0;}if(m->boot){m->boot=0;event(m,"notice","","","Tiempo agotado al preparar la mensajería.",-1);}}
 }
 const wa_message_event *wa_messenger_event(const wa_messenger *m){return m&&m->event_count?m->events:NULL;}
-void wa_messenger_event_done(wa_messenger *m){if(!m||!m->event_count)return;OPENSSL_cleanse(m->events,sizeof *m->events);m->event_count--;memmove(m->events,m->events+1,m->event_count*sizeof *m->events);}
+void wa_messenger_event_done(wa_messenger *m){if(!m||!m->event_count)return;OPENSSL_cleanse(m->events,sizeof *m->events);m->event_count--;memmove(m->events,m->events+1,m->event_count*sizeof *m->events);groups_pump(m);}
 
 int wa_messenger_stored(wa_messenger *m,const char *id,const char *jid,int outgoing) {
  return m&&wa_inbox_confirm(m->inbox,id,jid,outgoing);

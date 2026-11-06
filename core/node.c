@@ -19,6 +19,7 @@ wa_tree *wa_tree_create(void) {
 }
 void wa_tree_free(wa_tree *t) {
   if (t) {
+    for(size_t i=0;i<WA_NODE_LIMIT/WA_NODE_CHUNK;i++)free(t->nodes[i]);
     free(t->arena);
     free(t);
   }
@@ -27,7 +28,12 @@ wa_node *wa_node_add(wa_tree *t, wa_node *p, const char *tag) {
   if (!t || t->count == WA_NODE_LIMIT || !tag || !*tag)
     return NULL;
 
-  wa_node *n = &t->nodes[t->count++];
+  size_t chunk=t->count/WA_NODE_CHUNK,index=t->count%WA_NODE_CHUNK;
+  if(!t->nodes[chunk]) {
+    t->nodes[chunk]=calloc(WA_NODE_CHUNK,sizeof(wa_node));
+    if(!t->nodes[chunk])return NULL;
+  }
+  wa_node *n = &t->nodes[chunk][index];t->count++;
   n->tag = tag;
 
   if (p) {

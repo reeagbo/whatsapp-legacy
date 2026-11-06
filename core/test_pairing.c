@@ -213,6 +213,14 @@ int main(void) {
   assert(deliver(s,&server,t)&&s->state==5&&s->input_len==0);wa_tree_free(t);
   t=iq("result","legacy-ping-regression",NULL);
   assert(deliver(s,&server,t)&&s->state==5&&s->input_len==0);wa_tree_free(t);
+  /* The startup group reply used to exhaust the 256-node parser and tear
+   * down a healthy authenticated Noise session. Following frames must work. */
+  t=iq("result","large-group-result",NULL);
+  wa_node *groups=wa_node_add(t,t->root,"groups"),*group=wa_node_add(t,groups,"group");
+  assert(group&&wa_node_attr(group,"id","120363000000001")&&wa_node_attr(group,"subject","Synthetic large group"));
+  for(unsigned j=0;j<320;j++){wa_node *p=wa_node_add(t,group,"participant");assert(p&&wa_node_attr(p,"jid","12345678@lid"));}
+  assert(deliver(s,&server,t)&&s->state==5&&s->input_len==0);wa_tree_free(t);
+  t=iq("result","after-large-group",NULL);assert(deliver(s,&server,t)&&s->state==5&&s->input_len==0);wa_tree_free(t);
   assert(wa_pair_ping(s));wa_tree_free(drain(s,&server));
   const char *log = wa_pair_debug_log(s);
   assert(strstr(log,"PAIR_CODE_PREPARED") && strstr(log,"PAIRING_RESTART_REQUIRED"));

@@ -1,4 +1,16 @@
 /* Private messenger implementation. All network/crypto ownership remains C99. */
+/* Summaries deliberately omit full membership and never infer that a missing
+ * participant list means we left. Detailed metadata is queried on demand. */
+static void groups_pump(wa_messenger *m) {
+ while(m->group_next&&m->event_count<EVENTS-2) {
+  const wa_node *g=m->group_next;m->group_next=g->next;
+  const char *id=wa_node_get(g,"id"),*subject=wa_node_get(g,"subject");char jid[128];
+  if(strcmp(g->tag,"group")||!id||strlen(id)>100||!subject||strlen(subject)>256||!utf8((const uint8_t*)subject,strlen(subject)))continue;
+  snprintf(jid,sizeof jid,strchr(id,'@')?"%s":"%s@g.us",id);
+  if(is_group(jid))event(m,"group","",jid,subject,1);
+ }
+ if(m->group_listing&&!m->group_next){wa_tree_free(m->group_listing);m->group_listing=NULL;}
+}
 static int group_metadata(wa_messenger *m,const wa_node *g,int sending) {
  const char *raw=wa_node_get(g,"id"),*subject=wa_node_get(g,"subject");char jid[128];
  if(!raw||strlen(raw)>100)return 0;
@@ -32,7 +44,13 @@ static int group_metadata(wa_messenger *m,const wa_node *g,int sending) {
  return 1;
 }
 int wa_messenger_group(wa_messenger *m,int action,const char *jid,const char *subject,const char *members) {
- if(!m||!m->ready||m->group_query[0]||action<0||action>3)return 0;
+ if(!m||!m->ready||action<0||action>3)return 0;
+ if(m->group_query[0]) {
+  /* A background refresh must not occupy the user's create/leave/info slot.
+   * Its late IQ is ignored; refresh again after the user operation. */
+  if(m->group_action!=0||action==0)return 0;
+  m->group_query[0]=0;m->group_deadline=0;m->groups_due=1;
+ }
  if((action==2||action==3)&&!is_group(jid))return 0;
  if(action==1&&(!subject||!strlen(subject)||strlen(subject)>256||!utf8((const uint8_t*)subject,strlen(subject))||!members))return 0;
  snprintf(m->group_query,sizeof m->group_query,"legacy-group-%u",++m->group_sequence);
@@ -40,11 +58,13 @@ int wa_messenger_group(wa_messenger *m,int action,const char *jid,const char *su
  wa_tree *t=group_iq(action==1||action==2?"set":"get",m->group_query,action==3?m->group_target:"@g.us");
  wa_node *q=t?wa_node_add(t,t->root,action==0?"participating":action==1?"create":action==2?"leave":"query"):NULL;
  int ok=q!=NULL;
- if(action==0)ok=ok&&wa_node_add(t,q,"participants")&&wa_node_add(t,q,"description");
+ /* No full participant lists/descriptions in the startup refresh. */
  if(action==3)ok=ok&&wa_node_attr(q,"request","interactive");
  if(action==2){wa_node *g=wa_node_add(t,q,"group");ok=ok&&g&&wa_node_attr(g,"id",m->group_target);}
  if(action==1){
-  ok=ok&&wa_node_attr(q,"subject",subject)&&wa_node_attr(q,"key",m->group_query);
+  uint8_t nonce[16];ok=ok&&RAND_bytes(nonce,sizeof nonce)==1;
+  if(ok)for(size_t i=0;i<sizeof nonce;i++)snprintf(m->group_key+i*2,3,"%02X",nonce[i]);
+  ok=ok&&wa_node_attr(q,"subject",subject)&&wa_node_attr(q,"key",m->group_key);
   const char *p=members;char peers[GROUP_MEMBERS][128];size_t count=0;
   while(ok&&*p){const char *end=strchr(p,'\n');size_t n=end?(size_t)(end-p):strlen(p);char peer[128];
    if(!n||n>=sizeof peer||count==GROUP_MEMBERS){ok=0;break;}
@@ -76,8 +96,12 @@ static int groups_node(wa_messenger *m,const wa_node *node) {
  }
  if(strcmp(node->tag,"iq")||!id||!m->group_query[0]||strcmp(id,m->group_query))return 0;
  int ok=type&&!strcmp(type,"result")&&!wa_node_child(node,"error");
- if(ok&&m->group_action==0){const wa_node *groups=wa_node_child(node,"groups");ok=groups!=NULL;
-  for(const wa_node *g=groups?groups->child:NULL;g;g=g->next)if(!strcmp(g->tag,"group")&&!group_metadata(m,g,0))ok=0;
+ if(ok&&m->group_action==0){
+  uint8_t *encoded=malloc(WA_NODE_BYTES);size_t size=0;
+  wa_tree *listing=encoded&&wa_node_encode(node,encoded,WA_NODE_BYTES,&size)?wa_node_decode(encoded,size):NULL;
+  free(encoded);const wa_node *groups=listing?wa_node_child(listing->root,"groups"):NULL;ok=groups!=NULL;
+  if(ok){wa_tree_free(m->group_listing);m->group_listing=listing;m->group_next=groups->child;groups_pump(m);}
+  else wa_tree_free(listing);
  }else if(ok&&m->group_action==2)event(m,"group-left","",m->group_target,"",1);
  else if(ok)ok=group_metadata(m,wa_node_child(node,"group"),0);
  event(m,"group-result","",m->group_target,ok?"Operación de grupo completada":"WhatsApp rechazó la operación o devolvió datos no compatibles",ok?1:-1);

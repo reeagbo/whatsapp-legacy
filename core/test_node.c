@@ -32,7 +32,21 @@ static void reference_encoding(void) {
   assert(!strcmp(wa_node_get(decoded->root,"to"),"34123456789:2@s.whatsapp.net"));
   wa_tree_free(decoded);wa_tree_free(t);
 }
+static void large_group_nodes(void) {
+ wa_tree *t=wa_tree_create();assert(t&&!t->nodes[0]);
+ wa_node *root=wa_node_add(t,NULL,"iq"),*groups=wa_node_add(t,root,"groups"),*g=wa_node_add(t,groups,"group");
+ char keys[20][16];
+ for(unsigned i=0;i<20;i++){snprintf(keys[i],sizeof keys[i],"field%u",i);assert(wa_node_attr(g,keys[i],"value"));}
+ for(unsigned i=0;i<320;i++){wa_node *p=wa_node_add(t,g,"participant");assert(p&&wa_node_attr(p,"jid","12345678@lid"));}
+ assert(t->count==323&&g->child&&g->child->next);
+ uint8_t out[32768];size_t n=0;assert(wa_node_encode(root,out,sizeof out,&n));
+ wa_tree *d=wa_node_decode(out,n);assert(d&&d->count==323);
+ assert(wa_node_child(wa_node_child(d->root,"groups"),"group")->attr_count==20);
+ wa_tree_free(d);wa_tree_free(t);
+ puts("PASS: 320-member group reply and 20 attributes cross chunk boundaries without pointer invalidation");
+}
 int main(void) {
+  large_group_nodes();
   reference_encoding();
   wa_tree *t = wa_tree_create();
   assert(t);
