@@ -2,12 +2,16 @@
 
 ## Actualización 0.37-debug: fijados y orden
 
+- Entrega firmada completada: commit funcional 2e2c9bbbde5c2833b586a48aa8c29244490e8ab4.
+- CI completo aprobado (C99, SQLite, Android, unidad, lint, UI e instrumentación): https://github.com/reeagbo/whatsapp-legacy/actions/runs/42225141688
+- Descarga: https://github.com/reeagbo/whatsapp-legacy/actions/runs/42225141688/artifacts/13505118763
+- APK whatsapp-legacy-0.37-debug-armeabi-v7a.apk: 3.246.151 bytes; verificados contenido firmado, arquitectura ARM32 única y certificado idéntico a 0.36. Instalar como actualización.
 - SQLite v8: pinned y pinned_changed; migración conservando historial y fusión PN/LID.
 - Historial Conversation.pinned (24) y app-state regular_low pin_v1 / SyncActionValue.pinAction (5), apiVersion 5.
 - Selección de chats: Fijar/Desfijar con cambio local inmediato y cola remota existente, incluso sin mensaje ancla.
 - Fijados por timestamp descendente; resto por actividad descendente, desempate por JID. Se conserva conversationTimestamp/lastMsgTimestamp importado.
 - Pruebas locales: pin/unpin autenticado y descifrado; migración v7-v8, orden, desfijado y protección frente a historial tardío; suite SQLite existente aprobada.
-- Compilación local ARM32 aprobada: assembleDebug, testDebugUnitTest, lintDebug y suite completa C99. APK de 3.238.809 bytes sin firmar; no instalable como actualización. El usuario autorizó explícitamente publicar en main y ejecutar GitHub Actions para generar la APK firmada; se inicia la entrega remota. Se corrigieron también las rutas 0.37 del workflow. No se ejecutó emulador.
+- Compilación local ARM32 aprobada: assembleDebug, testDebugUnitTest, lintDebug y suite completa C99. APK de 3.238.809 bytes sin firmar; no instalable como actualización. El usuario autorizó explícitamente publicar en main y ejecutar GitHub Actions para generar la APK firmada; entrega remota completada y verificada. Se corrigieron también las rutas 0.37 del workflow. El emulador se validó posteriormente en el CI completo de esta entrega.
 - La cola saliente sigue sin persistencia ni reintento tras fallo. Validación en cuenta real pendiente. Entrega ARM32 exclusivamente.
 
 ## Actualización anterior: 0.36-debug (6 de noviembre)
