@@ -92,6 +92,32 @@ class GroupCreationInstrumentation : Instrumentation() {
                     check(store.messages(restored).isEmpty())
                     check(store.chats().none { it.jid==deleted || it.jid==summary })
                     check(store.writableDatabase.version==9)
+                    // The pin limit covers both groups and direct chats. Reject an
+                    // excess UI action before changing SQLite or enqueuing a write.
+                    val first="120363000000094@g.us"
+                    val extra="120363000000093@g.us"
+                    store.updateGroup(first,"Segundo fijado",null,false)
+                    store.updateGroup(extra,"Cuarto fijado",null,false)
+                    store.setPinned(first,500,500)
+                    val direct="34999999999@s.whatsapp.net"
+                    store.append("limit-test",direct,"Prueba",false,0,600)
+                    store.setPinned(direct,600,600)
+                    check(store.chats(false).count { it.pinned>0 }==3)
+                    @Suppress("UNCHECKED_CAST")
+                    val selection=get("selectedChats") as MutableSet<String>
+                    selection.clear();selection.add(extra)
+                    val change=MainActivity::class.java.getDeclaredMethod("applySelectedChatChange",Int::class.javaPrimitiveType).apply { isAccessible=true }
+                    val queue=get("queuedChatChanges") as java.util.ArrayDeque<*>
+                    val beforeQueue=queue.size
+                    set("connected",false) // Keep this synthetic UI write offline.
+                    change.invoke(target,3)
+                    check(store.chat(extra)?.pinned==0L && queue.size==beforeQueue)
+                    // Freeing one slot allows the exact same selection to be pinned.
+                    store.setPinned(first,0,700)
+                    change.invoke(target,3)
+                    check((store.chat(extra)?.pinned ?: 0)>0 && queue.size==beforeQueue+1)
+                    check(store.chats(false).count { it.pinned>0 }==3)
+                    set("connected",true)
                     // Error and timeout must also restore connection status.
                     for(state in listOf("-1","-2")) {
                         begin()
@@ -106,7 +132,7 @@ class GroupCreationInstrumentation : Instrumentation() {
                 } catch(error: Throwable) { failure.set(error) }
             }
             failure.get()?.let { throw it }
-            result.putString("stream","\nPASS: group creation confirmation opens its chat and clears progress; errors, timeout and disconnect clear progress; group summaries/pins without text, deleted replay and v8 migration verified\n")
+            result.putString("stream","\nPASS: group creation confirmation opens its chat and clears progress; errors, timeout and disconnect clear progress; group summaries/pins without text, deleted replay and v8 migration and 3-chat pin limit verified\n")
             finish(Activity.RESULT_OK,result)
         } catch(error: Throwable) {
             result.putString("stream","\nFAIL: group creation UI: $error\n")

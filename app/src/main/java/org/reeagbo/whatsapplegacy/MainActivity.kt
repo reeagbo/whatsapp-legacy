@@ -408,6 +408,11 @@ class MainActivity : Activity() {
         val visible=store.chats(showingArchived).map { it.jid }.toSet()
         val peers=selectedChats.map { store.resolve(it) }.distinct().filter { it in visible }
         if(peers.isEmpty()) { clearChatSelection();return }
+        if(change==3 && !store.canPin(peers)) {
+            debugLog.add("PIN_LIMIT_BLOCKED selected=${peers.size} active_pins=${store.chats(false).count { it.pinned>0 }}")
+            Toast.makeText(this,"WhatsApp admite un máximo de 3 conversaciones fijadas. Desfija una primero.",Toast.LENGTH_LONG).show()
+            return
+        }
         val requests=mutableListOf<ChatChange>()
         val changed=System.currentTimeMillis()
         try {
@@ -418,7 +423,10 @@ class MainActivity : Activity() {
                     if(change==0)store.deleteChatLocally(jid)
                     else if(change>=3)store.setPinned(jid,if(change==3)changed else 0,changed)
                     else store.setArchived(jid,change==1,changed)
-                    if(change>=3)requests.add(ChatChange(jid,"",false,changed,changed,change))
+                    if(change>=3) {
+                        debugLog.add("PIN_LOCAL ref=${Integer.toHexString(jid.hashCode())} desired=${change==3} actual=${(store.chat(jid)?.pinned ?: 0)>0} changed=$changed")
+                        requests.add(ChatChange(jid,"",false,changed,changed,change))
+                    }
                     else if(anchor!=null)requests.add(ChatChange(anchor.peer,anchor.id,anchor.outgoing,anchor.time,changed,change))
                 }
             }
@@ -478,6 +486,7 @@ class MainActivity : Activity() {
         if(!connected || chatChangeInFlight)return
         while(queuedChatChanges.isNotEmpty()) {
             val request=queuedChatChanges.removeFirst()
+            if(request.change>=3)debugLog.add("PIN_SYNC_START ref=${Integer.toHexString(request.peer.hashCode())} desired=${request.change==3} changed=${request.changed}")
             chatChangeInFlight=active.deleteChat(request)
             if(chatChangeInFlight)return
             debugLog.add("DELETE_SYNC_NOT_STARTED")
@@ -900,7 +909,7 @@ class MainActivity : Activity() {
                                     }
                                     "delete", "edit" -> db.applyMessageMutation(e[2],e[1],e[4]=="1",e[0],time,e[3])
                                     "history-pin" -> { db.historyPinned(e[2],e[3].toLong()*1000);traceGroupSync("history-pin",e[2]) }
-                                    "pin" -> { db.setPinned(e[2],if(e[4]=="1")time else 0,time);importedPins++;traceGroupSync("pin",e[2]) }
+                                    "pin" -> { db.setPinned(e[2],if(e[4]=="1")time else 0,time);importedPins++;traceGroupSync("pin",e[2]);debugLog.add("PIN_SYNC_APPLIED ref=${Integer.toHexString(db.resolve(e[2]).hashCode())} received=${e[4]=="1"} actual=${(db.chat(e[2])?.pinned ?: 0)>0} changed=$time") }
                                     "history-archive" -> db.historyArchived(e[2],e[4]=="1")
                                     "archive" -> {
                                         db.setArchived(e[2],e[4]=="1",time)

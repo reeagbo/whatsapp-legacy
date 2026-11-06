@@ -102,6 +102,11 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         addChat(peer,updated=0)
         writableDatabase.execSQL("UPDATE chats SET archived=? WHERE jid=? AND archived_changed=0",arrayOf(if(archived)1 else 0,peer))
     }
+    fun canPin(addresses: Collection<String>): Boolean {
+        val activePins=chats(false).filter { it.pinned>0 }.map { it.jid }.toSet()
+        val additions=addresses.map { resolve(it) }.toSet()-activePins
+        return activePins.size+additions.size<=3
+    }
     fun setPinned(jid: String, pinned: Long, changed: Long) = historyTransaction {
         val peer=resolve(jid)
         addChat(peer,updated=0)
