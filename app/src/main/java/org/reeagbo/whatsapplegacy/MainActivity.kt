@@ -310,11 +310,20 @@ class MainActivity : Activity() {
         page=column().apply { setBackgroundColor(canvas) }
         setContentView(page)
     }
+    private var lastGroupListState=""
+    private fun traceGroupSync(source: String, jid: String) {
+        if(jid.endsWith("@g.us"))debugLog.add("GROUP_SYNC_ROW source=$source ref=${Integer.toHexString(jid.hashCode())}")
+    }
     private fun showList(archived: Boolean = showingArchived, preserveScroll: Boolean = false) {
         val previousY=if(preserveScroll)conversationScroll?.scrollY ?: 0 else 0
         if(archived!=showingArchived)selectedChats.clear()
         showingArchived=archived
         val chats=store.chats(archived)
+        val groupListState="archived=$archived groups=${chats.count { it.jid.endsWith("@g.us") }} pinned_groups=${chats.count { it.jid.endsWith("@g.us") && it.pinned>0 }}"
+        if(groupListState!=lastGroupListState) {
+            lastGroupListState=groupListState
+            debugLog.add("GROUP_SYNC_LIST $groupListState")
+        }
         val visible=chats.map { it.jid }.toSet()
         val canonicalSelection=selectedChats.map { store.resolve(it) }.filter { it in visible }
         selectedChats.clear();selectedChats.addAll(canonicalSelection)
@@ -742,6 +751,7 @@ class MainActivity : Activity() {
                 "alias-conflict", "alias-storage" -> debugLog.add("CONTACT_MAPPING kind=${e[0]}")
                 "group" -> {
                     store.updateGroup(e[2],e[3],if(state==2)null else state==1,e[1]=="created")
+                    traceGroupSync(if(e[1]=="summary")"summary" else "metadata",e[2])
                     if(e[1]=="created") {
                         creatingGroup=false
                         debugLog.add("GROUP_CREATION_UI_CONFIRMED")
@@ -884,12 +894,13 @@ class MainActivity : Activity() {
                                     "alias" -> if(!db.link(e[1],e[2]))throw java.io.IOException("Conflicting history address")
                                     "chat" -> {
                                         db.historyChat(e[2],e[3],time);importedChats++
+                                        traceGroupSync("history",e[2])
                                         if(requestedPeer!=null && db.resolve(e[2])==db.resolve(requestedPeer))
                                             containsRequestedPeer=true
                                     }
                                     "delete", "edit" -> db.applyMessageMutation(e[2],e[1],e[4]=="1",e[0],time,e[3])
-                                    "history-pin" -> db.historyPinned(e[2],e[3].toLong()*1000)
-                                    "pin" -> db.setPinned(e[2],if(e[4]=="1")time else 0,time)
+                                    "history-pin" -> { db.historyPinned(e[2],e[3].toLong()*1000);traceGroupSync("history-pin",e[2]) }
+                                    "pin" -> { db.setPinned(e[2],if(e[4]=="1")time else 0,time);traceGroupSync("pin",e[2]) }
                                     "history-archive" -> db.historyArchived(e[2],e[4]=="1")
                                     "archive" -> {
                                         db.setArchived(e[2],e[4]=="1",time)

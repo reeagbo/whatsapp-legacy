@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
 /** Android conversation storage. Protocol/Signal state belongs to the C core. */
-class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 8) {
+class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 9) {
     data class Chat(val jid: String, val name: String, val preview: String, val time: Long, val pushName: String, val archived: Boolean, val pinned: Long = 0)
     data class Message(val id: String, val peer: String, val text: String, val outgoing: Boolean,
                        val status: Int, val time: Long, val note: String, val author: String = "")
@@ -62,6 +62,19 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         if (oldVersion < 6) addArchiveTimestamp(db)
         if (oldVersion < 7) createGroups(db)
         if (oldVersion < 8) addPinned(db)
+        if (oldVersion < 9) restoreKnownGroups(db)
+    }
+    private fun restoreKnownGroups(db: SQLiteDatabase) {
+        // Repair v8 groups which had conversation/pin metadata but no text rows.
+        db.execSQL("INSERT OR IGNORE INTO group_metadata(jid) SELECT jid FROM chats WHERE jid LIKE '%@g.us' AND (updated>0 OR pinned>0)")
+        db.execSQL("UPDATE group_metadata SET visible=1 WHERE EXISTS(SELECT 1 FROM chats c WHERE c.jid=group_metadata.jid AND (c.updated>0 OR c.pinned>0) AND NOT EXISTS(SELECT 1 FROM chat_deletions d WHERE d.peer=c.jid AND d.remove_chat=1 AND d.cutoff>=c.updated AND d.changed>=c.pinned))")
+    }
+    private fun revealGroup(jid: String, activity: Long = 0, pinChanged: Long = 0, created: Boolean = false) {
+        if(!jid.endsWith("@g.us"))return
+        val db=writableDatabase
+        db.execSQL("INSERT OR IGNORE INTO group_metadata(jid) VALUES(?)",arrayOf(jid))
+        // A membership summary or stale history must not resurrect a deleted chat.
+        db.execSQL("UPDATE group_metadata SET visible=1 WHERE jid=? AND (?=1 OR NOT EXISTS(SELECT 1 FROM chat_deletions d WHERE d.peer=? AND d.remove_chat=1 AND d.cutoff>=? AND d.changed>=?))",arrayOf(jid,if(created)1 else 0,jid,activity,pinChanged))
     }
     fun addChat(address: String, name: String = "", updated: Long = System.currentTimeMillis()) {
         val jid = resolve(address)
@@ -93,11 +106,15 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         val peer=resolve(jid)
         addChat(peer,updated=0)
         writableDatabase.execSQL("UPDATE chats SET pinned=?,pinned_changed=? WHERE jid=? AND pinned_changed<=?",arrayOf(pinned,changed,peer,changed))
+        val effective=chat(peer)?.pinned ?: 0
+        if(effective>0)revealGroup(peer,pinChanged=effective)
     }
     fun historyPinned(jid: String, pinned: Long) = historyTransaction {
         val peer=resolve(jid)
         addChat(peer,updated=0)
         writableDatabase.execSQL("UPDATE chats SET pinned=? WHERE jid=? AND pinned_changed=0",arrayOf(pinned,peer))
+        val effective=chat(peer)?.pinned ?: 0
+        if(effective>0)revealGroup(peer,pinChanged=effective)
     }
     fun chat(jid: String): Chat? = queryChats(resolve(jid)).firstOrNull()
     private fun queryChats(jid: String?, archived: Boolean? = null): List<Chat> = readableDatabase.rawQuery(
@@ -158,6 +175,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         addChat(jid,updated=time)
         writableDatabase.execSQL("UPDATE chats SET updated=MAX(updated,?) WHERE jid=?",arrayOf(time,resolve(jid)))
         if(name.isNotBlank())learnName(jid,name)
+        revealGroup(resolve(jid),activity=time)
     }
     fun historyAnchor(jid: String): Message? = readableDatabase.rawQuery(
         "SELECT id,peer,text,outgoing,status,time,note FROM messages WHERE peer=? ORDER BY time ASC,id ASC,outgoing ASC LIMIT 1",arrayOf(resolve(jid))
@@ -308,6 +326,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         learnName(jid,subject)
         writableDatabase.execSQL("INSERT OR IGNORE INTO group_metadata(jid) VALUES(?)",arrayOf(jid))
         writableDatabase.execSQL("UPDATE group_metadata SET left_group=COALESCE(?,left_group),visible=MAX(visible,?) WHERE jid=?",arrayOf(joined?.let { if(it)0 else 1 },if(created)1 else 0,jid))
+        if(created || joined!=false)revealGroup(jid,created=created)
     }
     fun groupMembers(jid: String): List<Pair<String,Boolean>> = readableDatabase.rawQuery(
         "SELECT members FROM group_metadata WHERE jid=?",arrayOf(jid)

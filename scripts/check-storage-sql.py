@@ -198,3 +198,40 @@ history_pin=re.search(r'"(UPDATE chats SET pinned=\? WHERE jid=\? AND pinned_cha
 db.execute(history_pin,(200,'pin'))
 assert [r[0] for r in db.execute(query,('',-1,''))]==['new','old','pin']
 print('PASS: v7 -> v8, pinned ordering, unpin ordering and stale history guard')
+
+# v8 -> v9 repairs hidden group summaries/pins without inventing messages.
+db=sqlite3.connect(':memory:')
+for sql in [chats]+new_schema+contact_schema+sync_schema+archive_schema+group_schema:db.execute(sql)
+peers=['history@g.us','pinned@g.us','missing-meta@g.us','deleted@g.us','direct@s.whatsapp.net']
+for jid in peers:db.execute('INSERT INTO chats(jid,name,updated) VALUES(?,?,?)',(jid,'',100))
+for jid in peers[:2]+peers[3:4]:db.execute('INSERT INTO group_metadata(jid) VALUES(?)',(jid,))
+db.execute("UPDATE chats SET updated=0,pinned=200 WHERE jid='pinned@g.us'")
+db.execute("INSERT INTO chat_deletions VALUES('deleted@g.us',500,500,1)")
+repair=literals(source.split('private fun restoreKnownGroups',1)[1].split('private fun revealGroup',1)[0])
+db.commit();db.execute('BEGIN')
+for sql in repair:db.execute(sql)
+assert [r[0] for r in db.execute(query,('',-1,''))]==['pinned@g.us','history@g.us','missing-meta@g.us']
+db.rollback()
+assert db.execute(query,('',-1,'')).fetchall()==[]
+for sql in repair:db.execute(sql)
+assert db.execute('SELECT COUNT(*) FROM messages').fetchone()==(0,)
+assert db.execute("SELECT pinned FROM chats WHERE jid='pinned@g.us'").fetchone()==(200,)
+# Run the production reveal helper as a server summary, history or new pin.
+reveal=literals(source.split('private fun revealGroup',1)[1].split('fun addChat',1)[0])
+def reveal_group(jid,activity=0,pin=0,created=0):
+    db.execute(reveal[0],(jid,));db.execute(reveal[1],(jid,created,jid,activity,pin))
+db.execute("INSERT INTO chats(jid,name,updated) VALUES('summary@g.us','',0)")
+reveal_group('summary@g.us')
+assert 'summary@g.us' in [r[0] for r in db.execute(query,('',0,''))]
+for activity,pin in [(0,0),(100,100),(500,500)]:
+    reveal_group('deleted@g.us',activity,pin)
+    assert 'deleted@g.us' not in [r[0] for r in db.execute(query,('',-1,''))]
+reveal_group('deleted@g.us',501)
+assert 'deleted@g.us' in [r[0] for r in db.execute(query,('',0,''))]
+db.execute("UPDATE group_metadata SET visible=0 WHERE jid='deleted@g.us'")
+reveal_group('deleted@g.us',pin=501)
+assert 'deleted@g.us' in [r[0] for r in db.execute(query,('',0,''))]
+db.execute("UPDATE chats SET archived=1 WHERE jid='pinned@g.us'")
+assert 'pinned@g.us' not in [r[0] for r in db.execute(query,('',0,''))]
+assert [r[0] for r in db.execute(query,('',1,''))]==['pinned@g.us']
+print('PASS: v8 -> v9 hidden group/pin repair, membership summary visibility, no fake text, archive separation, rollback and deleted-group replay guards')

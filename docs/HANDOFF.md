@@ -1,5 +1,16 @@
 # Continuidad del proyecto — 6 de noviembre de 2026
 
+## Actualización 0.38-debug: visibilidad y sincronización de grupos
+
+- El usuario confirmó que los fijados individuales sí suben y se marcan correctamente. El fallo pendiente estaba en los grupos; no cambiar la ordenación de individuales.
+- Reproducido: chats de grupo con actividad y fijado guardados pero sin mensajes no aparecían en queryChats porque group_metadata.visible permanecía a cero.
+- Los resúmenes participating, las conversaciones de historial y los fijados de grupo hacen visible el chat sin exigir mensajes de texto importados. No se crean mensajes ficticios ni se infiere la salida del grupo por un resumen sin participantes.
+- SQLite v9 repara al actualizar los grupos ocultos ya guardados en v8. Respeta archivo y marcas de borrado: un resumen o historial anterior no resucita una conversación borrada; una actividad o fijado posterior sí puede hacerlo.
+- Trazas GROUP_SYNC_ROW (fuente y referencia opaca del grupo) y GROUP_SYNC_LIST (grupos visibles y fijados), sin nombres ni texto. Permiten distinguir llegada/importación de la lista final si aún faltan grupos reales.
+- Regresiones SQLite: migración con rollback, grupo sin texto, estado fijado, archivo, borrado y datos tardíos. Regresión Android ampliada: eventos summary reales hacia UI/almacenamiento, pin/unpin, borrado y reapertura de BD v8.
+- Validación local SQLite aprobada. Compilación firmada y validación completa de Android en GitHub Actions pendientes al redactar esta sección. ARM32 exclusivamente.
+- Todavía hace falta validar los grupos de la cuenta real en el teléfono; no afirmar que todos llegan ni que el envío real de grupos está validado.
+
 ## Actualización 0.37-debug: fijados y orden
 
 - Entrega firmada completada: commit funcional 2e2c9bbbde5c2833b586a48aa8c29244490e8ab4.

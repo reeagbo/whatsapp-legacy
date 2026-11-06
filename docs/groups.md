@@ -72,9 +72,11 @@ app-state delete synchronization. **It does not leave the group.** Leaving is a
 separate action in group information; it takes effect after server confirmation.
 Archive/unarchive use the existing app-state path with group JIDs.
 
-Participating-group metadata alone does not populate the conversation list with
-empty groups. A newly created group is deliberately visible until deleted;
-other groups become visible with locally stored messages.
+Since 0.38, participating summaries and imported conversation/pin
+records create visible group rows without waiting for text history. SQLite v9
+repairs hidden group rows from v8. Deletion tombstones prevent stale summaries
+or history from recreating deleted chats; newer activity or a newer pin can
+make the conversation visible again. No synthetic messages are inserted.
 
 ## Validation and remaining work
 

@@ -58,6 +58,40 @@ class GroupCreationInstrumentation : Instrumentation() {
                     check(store.chat(bootstrap)?.archived==true)
                     events.invoke(target,listOf(arrayOf("group","",jid,"Miembros actuales","1","0","")))
                     check(!store.groupLeft(jid))
+                    // Participating summaries are chats even before text history arrives.
+                    val summary="120363000000097@g.us"
+                    events.invoke(target,listOf(arrayOf("group","summary",summary,"Grupo sincronizado","2","0","")))
+                    check(store.chats(false).any { it.jid==summary })
+                    check(store.messages(summary).isEmpty())
+                    store.historyPinned(summary,200)
+                    check(store.chats(false).first().jid==summary)
+                    store.setPinned(summary,0,300)
+                    store.historyPinned(summary,200)
+                    check(store.chat(summary)?.pinned==0L)
+                    store.setPinned(summary,400,400)
+                    check(store.chats(false).first().jid==summary)
+                    store.historyArchived(summary,true)
+                    check(store.chats(false).none { it.jid==summary })
+                    check(store.chats(true).any { it.jid==summary && it.pinned==400L })
+                    store.deleteChatLocally(summary)
+                    events.invoke(target,listOf(arrayOf("group","summary",summary,"Resumen repetido","2","0","")))
+                    store.historyChat(summary,"Historial anterior",100)
+                    store.historyPinned(summary,200)
+                    check(store.chats().none { it.jid==summary })
+                    // Reopening an actual v8 database repairs existing hidden group rows.
+                    val restored="120363000000096@g.us"
+                    val deleted="120363000000095@g.us"
+                    val db=store.writableDatabase
+                    db.execSQL("INSERT INTO chats(jid,name,updated,pinned) VALUES(?,?,?,?)",arrayOf(restored,"Grupo recuperado",100,200))
+                    db.execSQL("INSERT INTO group_metadata(jid,visible) VALUES(?,0)",arrayOf(restored))
+                    db.execSQL("INSERT INTO chats(jid,name,updated,pinned) VALUES(?,?,?,?)",arrayOf(deleted,"Borrado",100,200))
+                    db.execSQL("INSERT INTO chat_deletions VALUES(?,?,?,1)",arrayOf(deleted,500,500))
+                    db.version=8
+                    store.close()
+                    check(store.chats(false).first().jid==restored)
+                    check(store.messages(restored).isEmpty())
+                    check(store.chats().none { it.jid==deleted || it.jid==summary })
+                    check(store.writableDatabase.version==9)
                     // Error and timeout must also restore connection status.
                     for(state in listOf("-1","-2")) {
                         begin()
@@ -72,7 +106,7 @@ class GroupCreationInstrumentation : Instrumentation() {
                 } catch(error: Throwable) { failure.set(error) }
             }
             failure.get()?.let { throw it }
-            result.putString("stream","\nPASS: group creation confirmation opens its chat and clears progress; errors, timeout and disconnect clear progress\n")
+            result.putString("stream","\nPASS: group creation confirmation opens its chat and clears progress; errors, timeout and disconnect clear progress; group summaries/pins without text, deleted replay and v8 migration verified\n")
             finish(Activity.RESULT_OK,result)
         } catch(error: Throwable) {
             result.putString("stream","\nFAIL: group creation UI: $error\n")
