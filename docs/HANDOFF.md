@@ -9,7 +9,9 @@
 - Slot y base separados de las operaciones salientes: history-task-12 y rebuild-base-low; las operaciones del usuario conservan sus slots/bases. La recuperación es reanudable y el marcador se escribe después de confirmar SQLite. Las páginas se verifican con los mismos HMAC, claves e integridad del mapa que las escrituras existentes.
 - Pruebas C99: instantánea vieja más deltas ya recibidos, pin de grupo y unarchive finales, manipulación rechazada, cursor más reciente rechazado, páginas sin estados intermedios, continuación, marcador solo tras commit y primera petición versión cero.
 - Log mejorado: APP_STATE_REBUILD_BASE, regular_low-rebuilt y contadores pins/archives por chunk confirmado.
-- Pruebas locales de C99 y SQLite aprobadas; compilación firmada ARM32 y Android CI pendientes. La corrección de estados reales debe confirmarse en el teléfono tras la entrega.
+- Entrega completada: commit funcional af6ec0525b829911b58b5e454b6449370aa36b1e. CI completo aprobado (C99, SQLite, Android, unidad, lint, UI e instrumentación): https://github.com/reeagbo/whatsapp-legacy/actions/runs/42257225816
+- APK firmada whatsapp-legacy-0.39-debug-armeabi-v7a.apk: 3.249.224 bytes; integridad, arquitectura ARM32 y certificado idéntico a 0.38 comprobados. Descarga: https://github.com/reeagbo/whatsapp-legacy/actions/runs/42257225816/artifacts/13524285318
+- Library de la APK: libfile_5acfc46f82588191b3fffe5af0082f13. Instalar como actualización y dejar conectar para reconstrucción automática. La corrección de estados reales debe confirmarse en el teléfono tras la entrega.
 
 ## Actualización 0.38-debug: visibilidad y sincronización de grupos
 
