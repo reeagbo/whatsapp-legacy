@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="wa_background">#0B141A</color>
-    <color name="wa_surface">#17242C</color>
-    <color name="wa_pinned">#20333D</color>
-    <color name="wa_input">#26353E</color>
-    <color name="wa_outgoing">#174D3F</color>
-    <color name="wa_avatar">#23483E</color>
-    <color name="wa_divider">#26353D</color>
-    <color name="wa_accent">#61DDB3</color>
-    <color name="wa_text">#E9EDEF</color>
-    <color name="wa_muted">#ABBBC4</color>
+    <color name="wa_background">#141311</color>
+    <color name="wa_surface">#211F1B</color>
+    <color name="wa_pinned">#302A1D</color>
+    <color name="wa_input">#353129</color>
+    <color name="wa_outgoing">#49341F</color>
+    <color name="wa_avatar">#423321</color>
+    <color name="wa_divider">#39342C</color>
+    <color name="wa_accent">#FFC36B</color>
+    <color name="wa_text">#F2EEE7</color>
+    <color name="wa_muted">#BDB3A5</color>
 </resources>

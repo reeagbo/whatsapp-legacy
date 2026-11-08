@@ -12,8 +12,8 @@ android {
         testInstrumentationRunner "org.reeagbo.whatsapplegacy.GroupCreationInstrumentation"
         minSdk 21
         targetSdk 35
-        versionCode 45
-        versionName '0.45-debug'
+        versionCode 46
+        versionName '0.46-debug'
         ndk { abiFilters targetAbi }
         externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_static' } }
     }
