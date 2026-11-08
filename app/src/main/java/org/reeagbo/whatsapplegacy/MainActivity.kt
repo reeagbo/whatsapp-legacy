@@ -194,12 +194,16 @@ class MainActivity : Activity() {
         return connection?.resolve(base) ?: store.resolve(base)
     }
     private fun display(jid: String) = if(jid.endsWith("@g.us"))"Grupo" else if (jid.endsWith("@lid")) "Pendiente" else "+" + jid.substringBefore('@').substringBefore(':')
+    private fun knownContactName(chat: ChatStore.Chat): String? =
+        chat.name.takeIf { it.isNotBlank() }
+            ?: phoneNames[chat.jid]?.takeIf { it.isNotBlank() && !chat.jid.endsWith("@g.us") }
+            ?: chat.pushName.takeIf { it.isNotBlank() }
+
     private fun contactName(chat: ChatStore.Chat): String {
-        val name = chat.name.takeIf { it.isNotBlank() } ?: chat.pushName.takeIf { it.isNotBlank() }
+        val name = knownContactName(chat)
         val address = display(chat.jid)
-        if (chat.jid.endsWith("@g.us")) return name ?: address
-        phoneNames[chat.jid]?.let { return chat.name.takeIf { name -> name.isNotBlank() } ?: it }
-        return if (chat.jid.endsWith("@s.whatsapp.net") && name != null && name != address)
+        return if (chat.jid.endsWith("@s.whatsapp.net") && !phoneNames.containsKey(chat.jid) &&
+            name != null && name != address)
             "$address ($name)"
         else name ?: address
     }
@@ -392,7 +396,7 @@ class MainActivity : Activity() {
             val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(14),dp(8),dp(14),dp(8)); background=shape(if(chat.jid in selectedChats)outgoingSurface else if(chat.pinned>0)palette(R.color.wa_pinned) else surface,18); minimumHeight=dp(60); isClickable=true; isSelected=chat.jid in selectedChats; contentDescription=if(selectedChats.isEmpty())"Abrir conversación con $name" else if(isSelected)"Seleccionada: $name" else "Seleccionar: $name" }
             val avatar=if(chat.jid.endsWith("@g.us") && chat.jid !in selectedChats)
                 GlyphView(this,"group",green,palette(R.color.wa_avatar)).apply { contentDescription="Grupo" }
-            else label(if(chat.jid in selectedChats)"✓" else name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),12) }
+            else label(if(chat.jid in selectedChats)"✓" else knownContactName(chat)?.firstOrNull { it.isLetter() }?.uppercase().orEmpty(),22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),12) }
             row.addView(avatar,LinearLayout.LayoutParams(dp(44),dp(44)))
             row.addView(column().apply {
                 setPadding(dp(14),0,dp(8),0)
@@ -401,12 +405,17 @@ class MainActivity : Activity() {
             },LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1f))
             row.addView(column().apply {
                 gravity = Gravity.END
-                if (chat.time > 0) addView(label(SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(chat.time)), 12f, muted))
+                if (chat.time > 0) addView(
+                    label(SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(chat.time)), 12f, muted).apply {
+                        setSingleLine(true)
+                    },
+                    LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.END }
+                )
                 if (chat.pinned > 0) addView(
                     GlyphView(this@MainActivity, "pin", green, Color.TRANSPARENT).apply { contentDescription = "Chat fijado" },
-                    LinearLayout.LayoutParams(dp(26), dp(26))
+                    LinearLayout.LayoutParams(dp(26), dp(26)).apply { gravity = Gravity.END }
                 )
-            })
+            }, LinearLayout.LayoutParams(-2, -2))
             row.setOnClickListener { if(selectedChats.isEmpty())showChat(chat.jid) else toggleChatSelection(chat.jid) }
             row.setOnLongClickListener { toggleChatSelection(chat.jid); true }
             rows.addView(row,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(6) })
