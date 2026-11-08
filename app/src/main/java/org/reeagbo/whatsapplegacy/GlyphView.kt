@@ -46,6 +46,11 @@ class GlyphView(context: Context, private val glyph: String, private val tint: I
         }
         when(glyph) {
             "back" -> path(28f,14f,18f,24f,28f,34f)
+            "send" -> {
+                ink.strokeWidth = 3f
+                line(9f,24f,38f,24f)
+                path(25f,11f,38f,24f,25f,37f)
+            }
             "plus" -> { line(14f,24f,34f,24f);line(24f,14f,24f,34f) }
             "group" -> {
                 canvas.drawCircle(18f,18f,5f,fill)

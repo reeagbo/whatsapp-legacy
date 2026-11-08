@@ -1,4 +1,5 @@
 #include "history.h"
+#include "message_text.h"
 #include "wire.h"
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -822,7 +823,9 @@ static int message(wa_slice record,const char *chat,wa_slice meta,wa_message_eve
  char remote[128];if(!str(key,1,remote,sizeof remote)||!str(key,3,e->id,sizeof e->id))return 0;
  if(strcmp(remote,chat)){char alternate[128];int matches=(str(meta,39,alternate,sizeof alternate)&&!strcmp(remote,alternate))||(str(meta,42,alternate,sizeof alternate)&&!strcmp(remote,alternate));if(!matches)return 0;}
  wa_slice t;if(!bytes(msg,1,&t)&&(!bytes(msg,6,&inner)||!bytes(inner,1,&t)))return 0;
- if(!text(t,e->text,sizeof e->text))return 0;uint64_t sec=number(web,3);if(!sec||sec>253402300799ULL)return 0;*time=sec*1000;
+ if(!text(t,e->text,sizeof e->text))return 0;
+ wa_slice quote;if(wa_quoted_text(msg.ptr,msg.len,&quote))text(quote,e->quote,sizeof e->quote);
+ uint64_t sec=number(web,3);if(!sec||sec>253402300799ULL)return 0;*time=sec*1000;
  if(strstr(chat,"@g.us"))str(key,4,e->author,sizeof e->author);
  int own=number(key,2)!=0;strcpy(e->kind,own?"sent-copy":"message");strcpy(e->jid,chat);uint64_t status=number(web,4);e->state=own?(status>=2&&status<=5?(status>4?4:(int)status):-2):0;return 1;
 }

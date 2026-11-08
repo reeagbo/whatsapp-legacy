@@ -16,9 +16,11 @@ int main(void) {
  memory_store *data=calloc(1,sizeof *data);assert(data);wa_storage io={data,get,put};
  wa_inbox *in=wa_inbox_open(&io);assert(in&&!wa_inbox_count(in));
  wa_message_event e={0};strcpy(e.kind,"message");strcpy(e.id,"synthetic-id");strcpy(e.jid,"12345678@s.whatsapp.net");strcpy(e.text,"Texto conservado: café \xf0\x9f\x8c\x8d");
+ strcpy(e.quote,"Texto citado");
  data->fail_write=1;assert(!wa_inbox_add(in,&e)&&!wa_inbox_count(in)&&!data->n);
  data->fail_write=0;assert(wa_inbox_add(in,&e)&&wa_inbox_add(in,&e)&&wa_inbox_count(in)==1);
  wa_inbox_free(in);in=wa_inbox_open(&io);assert(in&&wa_inbox_count(in)==1&&!strcmp(wa_inbox_at(in,0)->text,e.text));
+ assert(!strcmp(wa_inbox_at(in,0)->quote,e.quote));
  wa_message_event outgoing=e;strcpy(outgoing.kind,"sent-copy");outgoing.state=2;
  assert(wa_inbox_add(in,&outgoing)&&wa_inbox_count(in)==2);
  assert(wa_inbox_confirm(in,e.id,e.jid,1)&&wa_inbox_count(in)==1);

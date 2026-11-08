@@ -16,7 +16,8 @@ group_schema = literals(source.split('private fun createGroups',1)[1].split('fun
 new_schema = literals(source.split('private fun createMessages',1)[1].split('private fun createContacts',1)[0])
 contact_schema = literals(source.split('private fun createContacts',1)[1].split('private fun createSync',1)[0])
 sync_schema = literals(source.split('private fun createSync',1)[1].split('private fun addArchiveColumn',1)[0])
-archive_schema = literals(source.split('private fun addArchiveColumn',1)[1].split('override fun onUpgrade',1)[0])
+archive_schema = literals(source.split('private fun addArchiveColumn',1)[1].split('private fun addQuote',1)[0])
+quote_schema = literals(source.split('private fun addQuote',1)[1].split('override fun onUpgrade',1)[0])
 upgrade = source.split('override fun onUpgrade',1)[1].split('if (oldVersion < 3)',1)[0]
 migration2 = []
 for match in re.finditer(r'db\.execSQL\("([^"]+)"\)|createMessages\(db\)', upgrade):
@@ -69,9 +70,9 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     merge = literals(source.split('fun link(',1)[1].split('fun interrupted()',1)[0])
     lid,pn='123456789@lid','34123456789@s.whatsapp.net'
     args=[(lid,pn),(pn,lid),(lid,lid,lid,lid,lid,pn),(lid,lid,lid,lid,lid,lid,pn),(pn,lid),(pn,pn,lid),(pn,lid),(lid,lid,lid,pn),
-          (pn,lid),(lid,pn),(pn,),(lid,),(lid,),(lid,),(lid,),(lid,),
+          (pn,lid),(lid,pn),(pn,),(lid,pn),(lid,),(lid,),(lid,),(lid,),(lid,),
           (pn,),(pn,),(pn,pn,pn),(pn,lid),(lid,)]
-    assert len(merge)==len(args)==21
+    assert len(merge)==len(args)==22
     path=Path(folder)/'merge.db'
     db=sqlite3.connect(path);db.execute('PRAGMA foreign_keys=ON')
     for sql in [chats]+new_schema+contact_schema+sync_schema+archive_schema+group_schema: db.execute(sql)
@@ -80,6 +81,10 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     rows=[('same',lid,'Duplicate alias',1,4,200,''),('same',pn,'First committed content',1,1,100,'Esperando'),
           ('same',lid,'Incoming independent',0,0,201,''),('other',lid,'Sólo LID 🌍',0,0,202,'')]
     db.executemany('INSERT INTO messages VALUES(?,?,?,?,?,?,?)',rows)
+    db.commit()
+    for sql in quote_schema: db.execute(sql)
+    assert db.execute("SELECT DISTINCT quote FROM messages").fetchall()==[('',)]
+    db.execute("UPDATE messages SET quote='Original' WHERE peer=? AND id='same' AND outgoing=1",(lid,))
     db.execute('INSERT INTO contact_names VALUES(?,?)',(lid,'Nombre recibido'));db.commit()
     # Any interruption, including after deleting old messages, rolls everything back.
     for step in range(1,len(merge)+1):
@@ -98,6 +103,7 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     assert db.execute('SELECT name FROM contact_names WHERE jid=?',(pn,)).fetchone()==('Nombre recibido',)
     assert db.execute('SELECT COUNT(*) FROM messages').fetchone()[0]==3
     assert db.execute('SELECT text,status,note FROM messages WHERE id=? AND outgoing=1',('same',)).fetchone()==('First committed content',4,'')
+    assert db.execute("SELECT quote FROM messages WHERE id='same' AND outgoing=1").fetchone()==('Original',)
     assert db.execute('SELECT text FROM messages WHERE id=? AND outgoing=0',('same',)).fetchone()==('Incoming independent',)
     assert not db.execute('PRAGMA foreign_key_check').fetchall()
     # An alias with no PN chat preserves its manual name and original timestamps.
@@ -143,7 +149,7 @@ with tempfile.TemporaryDirectory(prefix='wa-sql-') as folder:
     db.execute('DELETE FROM messages')
     assert db.execute(visible, ('', '-1', '')).fetchall() == []
     assert db.execute(visible, (pn, '-1', pn)).fetchone()[0] == pn
-    db.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?)', ('new', pn, 'Visible', 0, 0, 101, ''))
+    db.execute('INSERT INTO messages(id,peer,text,outgoing,status,time,note) VALUES(?,?,?,?,?,?,?)', ('new', pn, 'Visible', 0, 0, 101, ''))
     assert [row[0] for row in db.execute(visible, ('', '-1', ''))] == [pn]
     assert db.execute(visible, ('', '0', '')).fetchall() == []
     assert [row[0] for row in db.execute(visible, ('', '1', ''))] == [pn]
@@ -178,6 +184,7 @@ db.rollback()
 assert db.execute('SELECT text FROM messages').fetchone()==('Group text',)
 for sql in group_schema:db.execute(sql)
 db.execute('INSERT INTO message_authors VALUES(?,?,?,?)',('120363000000001@g.us','g1',0,'34123456789@s.whatsapp.net'))
+for sql in quote_schema:db.execute(sql)
 message_query=re.search(r'"(SELECT id,peer,text,outgoing,status,time,note,COALESCE[^"]+)"',source).group(1)
 assert db.execute(message_query,('120363000000001@g.us','100')).fetchone()[7]=='34123456789@s.whatsapp.net'
 print('PASS: v6 -> v7 group/author migration, transactional rollback and original message preservation')

@@ -122,7 +122,7 @@ class MainActivity : Activity() {
     private var messageList: LinearLayout? = null
     private var messageScroll: ScrollView? = null
     private var compose: EditText? = null
-    private var sendButton: Button? = null
+    private var sendButton: GlyphView? = null
     private var connected = false
     private var statusText = "Sin conexión"
     private var creatingGroup = false
@@ -194,8 +194,15 @@ class MainActivity : Activity() {
         return connection?.resolve(base) ?: store.resolve(base)
     }
     private fun display(jid: String) = if(jid.endsWith("@g.us"))"Grupo" else if (jid.endsWith("@lid")) "Pendiente" else "+" + jid.substringBefore('@').substringBefore(':')
-    private fun contactName(chat: ChatStore.Chat) = chat.name.takeIf { it.isNotBlank() }
-        ?: phoneNames[chat.jid] ?: chat.pushName.takeIf { it.isNotBlank() } ?: display(chat.jid)
+    private fun contactName(chat: ChatStore.Chat): String {
+        val name = chat.name.takeIf { it.isNotBlank() } ?: chat.pushName.takeIf { it.isNotBlank() }
+        val address = display(chat.jid)
+        if (chat.jid.endsWith("@g.us")) return name ?: address
+        phoneNames[chat.jid]?.let { return chat.name.takeIf { name -> name.isNotBlank() } ?: it }
+        return if (chat.jid.endsWith("@s.whatsapp.net") && name != null && name != address)
+            "$address ($name)"
+        else name ?: address
+    }
     private fun traceIdentity(chat: ChatStore.Chat) {
         val source=when {
             chat.name.isNotBlank() -> "manual"
@@ -291,11 +298,6 @@ class MainActivity : Activity() {
             requestContactNames()
         } else scheduleContacts(true)
     }
-    private fun action(text: String, description: String, click: () -> Unit) = Button(this).apply {
-        this.text = text; contentDescription = description; setTextColor(green); textSize = 23f
-        minWidth = dp(48); minimumWidth = dp(48); minHeight = dp(48); background = shape(Color.TRANSPARENT)
-        setOnClickListener { click() }
-    }
     private var menuAnchor: View?=null
     private var menuPopup: PopupWindow?=null
     private var deferredMenuRefresh=false
@@ -309,7 +311,7 @@ class MainActivity : Activity() {
         setOnClickListener { click() }
     }
     private fun toolbarItem(bar: LinearLayout, view: View) {
-        bar.addView(view,LinearLayout.LayoutParams(dp(48),dp(52)).apply { marginStart=dp(3) })
+        bar.addView(view,LinearLayout.LayoutParams(dp(48),dp(52)).apply { marginStart=dp(2) })
     }
     private fun selectAllChats() {
         val chats=store.chats(showingArchived)
@@ -319,13 +321,19 @@ class MainActivity : Activity() {
     }
     private fun header(name: String, chat: Boolean) {
         val bar=toolbar()
-        if (chat || showingArchived) toolbarItem(bar,glyph("back","Volver a conversaciones") { showList(chat && showingArchived) })
-        bar.addView(label(name, if(chat) 21f else 26f).apply { setTypeface(null,Typeface.BOLD); maxLines=1; gravity=Gravity.CENTER_VERTICAL; if(chat) { chatTitle=this; contentDescription="Editar nombre del contacto"; setOnClickListener { conversation?.let { editName(it) } } } }, LinearLayout.LayoutParams(0,dp(52),1f).apply { gravity=Gravity.CENTER_VERTICAL })
+        if (chat) toolbarItem(bar,glyph("back","Volver a conversaciones") { showList(showingArchived) })
+        bar.addView(label(name, if(chat) 21f else if(resources.configuration.screenWidthDp < 360) 18f else 24f).apply { setTypeface(null,Typeface.BOLD); maxLines=1; ellipsize=android.text.TextUtils.TruncateAt.END; gravity=Gravity.CENTER_VERTICAL; if(chat) { chatTitle=this; contentDescription="Editar nombre del contacto"; setOnClickListener { conversation?.let { editName(it) } } } }, LinearLayout.LayoutParams(0,dp(52),1f).apply { gravity=Gravity.CENTER_VERTICAL; if(chat) marginStart=dp(8) })
         if (!chat && !showingArchived) {
             toolbarItem(bar,glyph("plus","Nueva conversación") { newConversation() })
             toolbarItem(bar,glyph("group","Nuevo grupo") { newGroup() })
         }
         if(!chat)toolbarItem(bar,glyph("select","Seleccionar todas") { selectAllChats() }.apply { isEnabled=store.chats(showingArchived).isNotEmpty() })
+        if (!chat) {
+            val description = if (showingArchived) "Mostrar conversaciones visibles" else "Mostrar archivados"
+            toolbarItem(bar, glyph(if (showingArchived) "unarchive" else "archive", description) {
+                showList(!showingArchived)
+            })
+        }
         val menu=glyph("menu","Menú principal") { showMainMenu() }
         menuAnchor=menu;toolbarItem(bar,menu)
         page.addView(bar)
@@ -334,8 +342,15 @@ class MainActivity : Activity() {
             page.addView(addressLabel)
             updateAddressLabel()
         }
-        statusLabel=label(displayedStatus(),13f,muted).apply { setPadding(dp(20),dp(4),dp(16),dp(12)); setBackgroundColor(surface) }
-        page.addView(statusLabel)
+    }
+    private fun addStatusFooter() {
+        statusLabel = label(displayedStatus(), 13f, muted).apply {
+            setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(dp(20), dp(6), dp(16), dp(6))
+            setBackgroundColor(surface)
+        }
+        page.addView(statusLabel, LinearLayout.LayoutParams(-1, -2))
     }
     private fun newPage() {
         menuPopup?.dismiss();menuPopup=null;menuAnchor=null
@@ -374,17 +389,24 @@ class MainActivity : Activity() {
         for(chat in chats) {
             traceIdentity(chat)
             val name=contactName(chat)
-            val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(18),dp(15),dp(18),dp(15)); background=shape(if(chat.jid in selectedChats)outgoingSurface else if(chat.pinned>0)palette(R.color.wa_pinned) else surface,18); minimumHeight=dp(80); isClickable=true; isSelected=chat.jid in selectedChats; contentDescription=if(selectedChats.isEmpty())"Abrir conversación con $name" else if(isSelected)"Seleccionada: $name" else "Seleccionar: $name" }
+            val row=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(14),dp(8),dp(14),dp(8)); background=shape(if(chat.jid in selectedChats)outgoingSurface else if(chat.pinned>0)palette(R.color.wa_pinned) else surface,18); minimumHeight=dp(60); isClickable=true; isSelected=chat.jid in selectedChats; contentDescription=if(selectedChats.isEmpty())"Abrir conversación con $name" else if(isSelected)"Seleccionada: $name" else "Seleccionar: $name" }
             val avatar=if(chat.jid.endsWith("@g.us") && chat.jid !in selectedChats)
-                GlyphView(this,"group",green,palette(R.color.wa_avatar),26f).apply { contentDescription="Grupo" }
-            else label(if(chat.jid in selectedChats)"✓" else name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),28) }
-            row.addView(avatar,LinearLayout.LayoutParams(dp(52),dp(52)))
+                GlyphView(this,"group",green,palette(R.color.wa_avatar)).apply { contentDescription="Grupo" }
+            else label(if(chat.jid in selectedChats)"✓" else name.firstOrNull()?.uppercase() ?: "?",22f,green).apply { gravity=Gravity.CENTER; background=shape(palette(R.color.wa_avatar),12) }
+            row.addView(avatar,LinearLayout.LayoutParams(dp(44),dp(44)))
             row.addView(column().apply {
                 setPadding(dp(14),0,dp(8),0)
-                addView(label((if(chat.pinned>0)"📌 " else "")+name,18f).apply { setTypeface(null,Typeface.BOLD); setSingleLine(true) })
+                addView(label(name,18f).apply { setTypeface(null,Typeface.BOLD); setSingleLine(true); ellipsize=android.text.TextUtils.TruncateAt.END })
                 addView(label(chat.preview,14f,muted).apply { setSingleLine(true); ellipsize=android.text.TextUtils.TruncateAt.END; setPadding(0,dp(5),0,0) })
             },LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1f))
-            row.addView(label(if(chat.time>0) SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(chat.time)) else "",12f,muted))
+            row.addView(column().apply {
+                gravity = Gravity.END
+                if (chat.time > 0) addView(label(SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(chat.time)), 12f, muted))
+                if (chat.pinned > 0) addView(
+                    GlyphView(this@MainActivity, "pin", green, Color.TRANSPARENT).apply { contentDescription = "Chat fijado" },
+                    LinearLayout.LayoutParams(dp(26), dp(26))
+                )
+            })
             row.setOnClickListener { if(selectedChats.isEmpty())showChat(chat.jid) else toggleChatSelection(chat.jid) }
             row.setOnLongClickListener { toggleChatSelection(chat.jid); true }
             rows.addView(row,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(6) })
@@ -392,6 +414,7 @@ class MainActivity : Activity() {
         val scroll=ScrollView(this).apply { addView(rows) }
         conversationScroll=scroll
         page.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        addStatusFooter()
         if(preserveScroll)scroll.post { if(conversationScroll===scroll)scroll.scrollTo(0,previousY) }
     }
     private fun toggleChatSelection(jid: String) {
@@ -416,10 +439,6 @@ class MainActivity : Activity() {
         toolbarItem(bar,glyph(if(allSelected)"deselect" else "select",if(allSelected)"Deseleccionar todas" else "Seleccionar todas") { selectAllChats() })
         toolbarItem(bar,glyph("cancel","Cancelar selección") { clearChatSelection() })
         page.addView(bar)
-        statusLabel=label(displayedStatus(),13f,muted).apply {
-            setPadding(dp(20),dp(4),dp(16),dp(12));setBackgroundColor(surface)
-        }
-        page.addView(statusLabel)
     }
     private fun applySelectedChatChange(change: Int) {
         val visible=store.chats(showingArchived).map { it.jid }.toSet()
@@ -659,8 +678,13 @@ class MainActivity : Activity() {
         val bar=LinearLayout(this).apply { gravity=Gravity.BOTTOM;setPadding(dp(10),dp(8),dp(10),dp(10));setBackgroundColor(surface) }
         compose=EditText(this).apply { hint="Escribe un mensaje"; minLines=1;maxLines=5;textSize=17f;setTextColor(ink);setHintTextColor(muted);background=shape(inputSurface,24);setPadding(dp(16),dp(12),dp(16),dp(12));isSaveEnabled=false;inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES }
         bar.addView(compose,LinearLayout.LayoutParams(0,-2,1f))
-        sendButton=action("↑","Enviar mensaje") { sendText() }.apply { setTextColor(canvas);background=shape(green,28) }
+        sendButton = GlyphView(this, "send", canvas, green).apply {
+            contentDescription = "Enviar mensaje"
+            isFocusable = true
+            setOnClickListener { sendText() }
+        }
         bar.addView(sendButton,LinearLayout.LayoutParams(dp(54),dp(54)).apply { leftMargin=dp(8) });page.addView(bar)
+        addStatusFooter()
         refreshMessages();updateSend()
         if(jid.endsWith("@g.us"))connection?.group(3,jid)
     }
@@ -685,6 +709,13 @@ class MainActivity : Activity() {
             val bubble=column().apply { background=shape(if(message.outgoing)outgoingSurface else surface);setPadding(dp(13),dp(10),dp(13),dp(8));minimumWidth=dp(104) }
             if(jid.endsWith("@g.us")&&!message.outgoing&&message.author.isNotBlank())
                 bubble.addView(label(title(authorPeer(message.author)),13f,green))
+            if (message.quote.isNotBlank()) bubble.addView(label(message.quote, 14f, muted).apply {
+                maxWidth = (resources.displayMetrics.widthPixels * 0.73).toInt()
+                maxLines = 3
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(dp(9), dp(6), dp(9), dp(6))
+                background = shape(if (message.outgoing) surface else inputSurface, 8)
+            }, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(6) })
             bubble.addView(label(message.text,17f).apply { maxWidth=(resources.displayMetrics.widthPixels*0.73).toInt();setTextIsSelectable(true) })
             val state=if(!message.outgoing) "" else when(message.status) { 0->"Pendiente";1->"Enviado · sin confirmar";2->"Aceptado";3->if(jid.endsWith("@g.us"))"Entregado a alguien" else "Entregado";4->if(jid.endsWith("@g.us"))"Leído por alguien" else "Leído";-2->"Sin confirmación";else->"No enviado" }
             bubble.addView(label(SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date(message.time))+if(state.isBlank()) "" else " · $state",11f,muted).apply { gravity=Gravity.END;setPadding(0,dp(6),0,0) })
@@ -761,7 +792,7 @@ class MainActivity : Activity() {
                 "message", "sent-copy" -> if(e[1].isNotBlank()&&e[2].isNotBlank()) {
                     debugLog.hide(e[2].substringBefore('@'))
                     debugLog.add("MESSAGE_TARGET kind=${e[0]} event=${DebugLog.addressHint(e[2])} stored=${DebugLog.addressHint(store.resolve(e[2]))}")
-                    store.append(e[1],e[2],e[3],e[0]=="sent-copy",state,e.getOrNull(5)?.toLongOrNull()?.takeIf { it>0 } ?: System.currentTimeMillis(),author=authorPeer(e.getOrNull(6).orEmpty()))
+                    store.append(e[1],e[2],e[3],e[0]=="sent-copy",state,e.getOrNull(5)?.toLongOrNull()?.takeIf { it>0 } ?: System.currentTimeMillis(),author=authorPeer(e.getOrNull(6).orEmpty()),quote=e.getOrNull(7).orEmpty())
                     // The native inbox keeps the text until this SQLite commit succeeds.
                     connection?.stored(e[1],e[2],e[0]=="sent-copy")
                 }
@@ -959,7 +990,7 @@ class MainActivity : Activity() {
                                         debugLog.add("SYNC_CHAT_REMOVAL kind=${e[0]}")
                                     }
                                     "name" -> db.learnName(e[2],e[3])
-                                    "message", "sent-copy" -> { db.append(e[1],e[2],e[3],e[0]=="sent-copy",e[4].toInt(),time,true,e.getOrNull(6).orEmpty());importedMessages++ }
+                                    "message", "sent-copy" -> { db.append(e[1],e[2],e[3],e[0]=="sent-copy",e[4].toInt(),time,true,e.getOrNull(6).orEmpty(),e.getOrNull(7).orEmpty());importedMessages++ }
                                 }
                             }
                         }
@@ -1046,6 +1077,37 @@ class MainActivity : Activity() {
         item("Diagnóstico") { showDiagnostics() }
         popup.showAsDropDown(anchor,anchor.width-width,dp(4))
     }
+    private fun stylePanelButton(button: Button) {
+        button.setAllCaps(false)
+        button.textSize = 16f
+        button.minHeight = dp(48)
+        button.minimumHeight = dp(48)
+        button.setTextColor(android.content.res.ColorStateList(
+            arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+            intArrayOf(muted, green)
+        ))
+        button.background = android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(Color.argb(40, 255, 255, 255)),
+            shape(inputSurface), null
+        )
+        button.setPadding(dp(14), dp(10), dp(14), dp(10))
+    }
+    private fun showPanel(title: String, body: View) {
+        val panel = column().apply {
+            setPadding(dp(20), dp(18), dp(20), dp(14))
+            addView(label(title, 22f).apply { setTypeface(null, Typeface.BOLD) })
+            addView(ScrollView(this@MainActivity).apply { addView(body) },
+                LinearLayout.LayoutParams(-1, -2, 1f).apply { topMargin = dp(12) })
+        }
+        val dialog = AlertDialog.Builder(this).setView(panel).create()
+        panel.addView(Button(this).apply {
+            text = "Cerrar"
+            stylePanelButton(this)
+            setOnClickListener { dialog.dismiss() }
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+        dialog.show()
+        dialog.window?.setBackgroundDrawable(shape(surface, 18))
+    }
     private fun showDiagnostics() {
         val tools=column()
         val save=Button(this).apply { text="Guardar log";setOnClickListener { exportLog() } }
@@ -1063,14 +1125,14 @@ class MainActivity : Activity() {
         }
         listOfNotNull(check,stop,inspect,save).forEach {
             (it.parent as? ViewGroup)?.removeView(it)
-            tools.addView(it)
+            stylePanelButton(it)
+            tools.addView(it, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
         }
-        AlertDialog.Builder(this).setTitle("Diagnóstico").setView(tools)
-            .setPositiveButton("Cerrar",null).show()
+        showPanel("Diagnóstico", tools)
     }
     private fun showSettings() {
         (settingsBody.parent as? ViewGroup)?.removeView(settingsBody)
-        AlertDialog.Builder(this).setTitle("Conexión · $appVersion").setView(ScrollView(this).apply { addView(settingsBody) }).setPositiveButton("Cerrar",null).show()
+        showPanel("Vinculación · $appVersion", settingsBody)
     }
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
@@ -1085,13 +1147,22 @@ class MainActivity : Activity() {
         Thread.setDefaultUncaughtExceptionHandler(crashHandler)
         store=ChatStore(this);store.interrupted()
         phoneContacts=PhoneContacts(this)
-        settingsBody=column().apply { setPadding(dp(20),dp(4),dp(20),dp(16)) }
+        settingsBody=column()
         number=EditText(this).apply { hint="Tu número internacional, sin +";inputType=InputType.TYPE_CLASS_PHONE;setSingleLine(true);isSaveEnabled=false }
         pair=Button(this).apply { text="Solicitar código de vinculación con historial" }
         check=Button(this).apply { text="Reconectar sesión guardada" }
         stop=Button(this).apply { text="Desconectar";isEnabled=false }
         code=label("",32f).apply { setTextIsSelectable(true) };output=label("",14f)
-        listOf(number,pair,code,output).forEach { settingsBody.addView(it) }
+        number.apply {
+            background = shape(inputSurface)
+            setTextColor(ink)
+            setHintTextColor(muted)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+        stylePanelButton(pair)
+        listOf(number,pair,code,output).forEach {
+            settingsBody.addView(it, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+        }
         pair.setOnClickListener {
             val phone=number.text.toString().trim()
             val previous=activeIdentity()

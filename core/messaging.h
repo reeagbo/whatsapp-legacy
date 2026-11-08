@@ -4,8 +4,9 @@
 #include "storage.h"
 #include "node.h"
 #define WA_TEXT_MAX 4000
+#define WA_QUOTE_MAX 1024
 /* UTF-8 application events, never part of diagnostic logs. */
-typedef struct {char kind[16],id[96],jid[128],text[WA_TEXT_MAX+1];int state;uint64_t timestamp;char author[128];} wa_message_event;
+typedef struct {char kind[16],id[96],jid[128],text[WA_TEXT_MAX+1];int state;uint64_t timestamp;char author[128],quote[WA_QUOTE_MAX+1];} wa_message_event;
 typedef struct wa_messenger wa_messenger;
 typedef int (*wa_send_node)(void *,wa_tree *);
 wa_messenger *wa_messenger_create(const wa_identity *,const wa_storage *,const char *own_lid,wa_send_node,void *);

@@ -91,7 +91,7 @@ class GroupCreationInstrumentation : Instrumentation() {
                     check(store.chats(false).first().jid==restored)
                     check(store.messages(restored).isEmpty())
                     check(store.chats().none { it.jid==deleted || it.jid==summary })
-                    check(store.writableDatabase.version==9)
+                    check(store.writableDatabase.version==10)
                     // The pin limit covers both groups and direct chats. Reject an
                     // excess UI action before changing SQLite or enqueuing a write.
                     val first="120363000000094@g.us"

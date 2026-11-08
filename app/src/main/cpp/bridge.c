@@ -149,9 +149,9 @@ static jstring utf8_string(JNIEnv *env,const char *p) {
 JNIEXPORT jobjectArray JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeEvent(JNIEnv *env,jobject self,jlong h){
  (void)self;const wa_message_event *e=wa_pair_event(session(h));if(!e)return NULL;
  jclass cls=(*env)->FindClass(env,"java/lang/String");if(!cls)return NULL;
- jobjectArray out=(*env)->NewObjectArray(env,7,cls,NULL);(*env)->DeleteLocalRef(env,cls);if(!out)return NULL;
- char state[32],time[32];snprintf(time,sizeof time,"%llu",(unsigned long long)e->timestamp);snprintf(state,sizeof state,"%d",e->state);const char *fields[]={e->kind,e->id,e->jid,e->text,state,time,e->author};
- for(int i=0;i<7;i++){jstring value=utf8_string(env,fields[i]);if(!value)return NULL;(*env)->SetObjectArrayElement(env,out,i,value);(*env)->DeleteLocalRef(env,value);}
+ jobjectArray out=(*env)->NewObjectArray(env,8,cls,NULL);(*env)->DeleteLocalRef(env,cls);if(!out)return NULL;
+ char state[32],time[32];snprintf(time,sizeof time,"%llu",(unsigned long long)e->timestamp);snprintf(state,sizeof state,"%d",e->state);const char *fields[]={e->kind,e->id,e->jid,e->text,state,time,e->author,e->quote};
+ for(int i=0;i<8;i++){jstring value=utf8_string(env,fields[i]);if(!value)return NULL;(*env)->SetObjectArrayElement(env,out,i,value);(*env)->DeleteLocalRef(env,value);}
  wa_pair_event_done(session(h));return out;
 }
 JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeSend(JNIEnv *env,jobject self,jlong h,jstring jid,jstring id,jbyteArray text){
@@ -267,8 +267,8 @@ JNIEXPORT jobjectArray JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nati
  (void)self;if(!h)return NULL;wa_message_event e;uint64_t time=0;int r=wa_history_next((wa_history*)(intptr_t)h,&e,&time);
  if(r<0){jclass cls=(*env)->FindClass(env,"java/io/IOException");if(cls)(*env)->ThrowNew(env,cls,"Invalid history record");return NULL;}if(!r)return NULL;
  char status[32],timestamp[32];snprintf(status,sizeof status,"%d",e.state);snprintf(timestamp,sizeof timestamp,"%llu",(unsigned long long)time);
- const char *fields[]={e.kind,e.id,e.jid,e.text,status,timestamp,e.author};jclass cls=(*env)->FindClass(env,"java/lang/String");if(!cls)return NULL;jobjectArray out=(*env)->NewObjectArray(env,7,cls,NULL);(*env)->DeleteLocalRef(env,cls);if(!out)return NULL;
- for(int i=0;i<7;i++){jstring value=utf8_string(env,fields[i]);if(!value)return NULL;(*env)->SetObjectArrayElement(env,out,i,value);(*env)->DeleteLocalRef(env,value);}return out;
+ const char *fields[]={e.kind,e.id,e.jid,e.text,status,timestamp,e.author,e.quote};jclass cls=(*env)->FindClass(env,"java/lang/String");if(!cls)return NULL;jobjectArray out=(*env)->NewObjectArray(env,8,cls,NULL);(*env)->DeleteLocalRef(env,cls);if(!out)return NULL;
+ for(int i=0;i<8;i++){jstring value=utf8_string(env,fields[i]);if(!value)return NULL;(*env)->SetObjectArrayElement(env,out,i,value);(*env)->DeleteLocalRef(env,value);}return out;
 }
 JNIEXPORT void JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryClose(JNIEnv *env,jobject self,jlong h){(void)env;(void)self;wa_history_free((wa_history*)(intptr_t)h);}
 

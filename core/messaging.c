@@ -1,3 +1,4 @@
+#include "message_text.h"
 #include "messaging.h"
 #include "signal_engine.h"
 #include "inbox.h"
@@ -320,8 +321,11 @@ static int save_before_ratchet(void *user,const uint8_t *plain,size_t n) {
   }
  }
  if(!decode_text(plain,n-pad,text,dest,&own,0))return 0;
+ wa_message_event *e=&c->saved;memset(e,0,sizeof *e);
+ wa_slice quote;
+ if(wa_quoted_text(plain,n-pad,&quote)&&utf8(quote.ptr,quote.len))
+  memcpy(e->quote,quote.ptr,quote.len);
  if(is_group(c->from)) {
-  wa_message_event *e=&c->saved;memset(e,0,sizeof *e);
   copy(e->kind,sizeof e->kind,c->self?"sent-copy":"message");copy(e->id,sizeof e->id,c->id);
   copy(e->jid,sizeof e->jid,c->from);copy(e->text,sizeof e->text,text);copy(e->author,sizeof e->author,c->sender);
   e->state=c->self?2:0;e->timestamp=c->time;
@@ -333,7 +337,6 @@ static int save_before_ratchet(void *user,const uint8_t *plain,size_t n) {
   if(!wa_messenger_resolve(c->m,dest,peer))return 0;
  }
  else if(!mapped(c->m,c->from,peer)||!strstr(peer,"@s.whatsapp.net"))copy(peer,sizeof peer,c->from);
- wa_message_event *e=&c->saved;memset(e,0,sizeof *e);
  if(!copy(e->kind,sizeof e->kind,own?"sent-copy":"message")||
     !copy(e->id,sizeof e->id,c->id)||!copy(e->jid,sizeof e->jid,peer)||
     !copy(e->text,sizeof e->text,text))return WA_INBOX_STORAGE_ERROR;

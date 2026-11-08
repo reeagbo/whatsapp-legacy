@@ -6,10 +6,10 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
 /** Android conversation storage. Protocol/Signal state belongs to the C core. */
-class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 9) {
+class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db", null, 10) {
     data class Chat(val jid: String, val name: String, val preview: String, val time: Long, val pushName: String, val archived: Boolean, val pinned: Long = 0)
     data class Message(val id: String, val peer: String, val text: String, val outgoing: Boolean,
-                       val status: Int, val time: Long, val note: String, val author: String = "")
+                       val status: Int, val time: Long, val note: String, val author: String = "", val quote: String = "")
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
         db.execSQL("PRAGMA synchronous=FULL")
@@ -23,6 +23,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         addArchiveTimestamp(db)
         createGroups(db)
         addPinned(db)
+        addQuote(db)
     }
     private fun createMessages(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE messages(id TEXT NOT NULL, peer TEXT NOT NULL REFERENCES chats(jid), text TEXT NOT NULL, outgoing INTEGER NOT NULL, status INTEGER NOT NULL, time INTEGER NOT NULL, note TEXT NOT NULL, PRIMARY KEY(peer,id,outgoing))")
@@ -47,6 +48,9 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         db.execSQL("ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
         db.execSQL("ALTER TABLE chats ADD COLUMN pinned_changed INTEGER NOT NULL DEFAULT 0")
     }
+    private fun addQuote(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE messages ADD COLUMN quote TEXT NOT NULL DEFAULT ''")
+    }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
             // SQLiteOpenHelper wraps the migration in one transaction.
@@ -63,6 +67,7 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         if (oldVersion < 7) createGroups(db)
         if (oldVersion < 8) addPinned(db)
         if (oldVersion < 9) restoreKnownGroups(db)
+        if (oldVersion < 10) addQuote(db)
     }
     private fun restoreKnownGroups(db: SQLiteDatabase) {
         // Repair v8 groups which had conversation/pin metadata but no text rows.
@@ -126,13 +131,13 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
         "SELECT c.jid,c.name,COALESCE((SELECT text FROM messages m WHERE m.peer=c.jid ORDER BY time DESC,rowid DESC LIMIT 1),''),c.updated,COALESCE((SELECT name FROM contact_names n WHERE n.jid=c.jid),''),c.archived,c.pinned FROM chats c WHERE (?='' AND (CAST(? AS INTEGER) IN (-1,c.archived)) AND (EXISTS(SELECT 1 FROM messages m WHERE m.peer=c.jid) OR EXISTS(SELECT 1 FROM group_metadata g WHERE g.jid=c.jid AND g.visible=1))) OR c.jid=? ORDER BY c.pinned DESC,c.updated DESC,c.jid ASC", arrayOf(jid.orEmpty(),when(archived) { true -> "1"; false -> "0"; null -> "-1" },jid.orEmpty())
     ).use { c -> buildList { while (c.moveToNext()) add(Chat(c.getString(0), c.getString(1), c.getString(2), c.getLong(3), c.getString(4), c.getInt(5)!=0,c.getLong(6))) } }
     fun messages(jid: String, limit: Int = 100): List<Message> = readableDatabase.rawQuery(
-        "SELECT id,peer,text,outgoing,status,time,note,COALESCE((SELECT author FROM message_authors a WHERE a.peer=messages.peer AND a.id=messages.id AND a.outgoing=messages.outgoing),'') FROM messages WHERE peer=? ORDER BY time DESC,id DESC,outgoing DESC LIMIT ?", arrayOf(resolve(jid),limit.coerceIn(1,5000).toString())
-    ).use { c -> buildList { while (c.moveToNext()) add(Message(c.getString(0),c.getString(1),c.getString(2),c.getInt(3)!=0,c.getInt(4),c.getLong(5),c.getString(6),c.getString(7))) }.reversed() }
+        "SELECT id,peer,text,outgoing,status,time,note,COALESCE((SELECT author FROM message_authors a WHERE a.peer=messages.peer AND a.id=messages.id AND a.outgoing=messages.outgoing),''),quote FROM messages WHERE peer=? ORDER BY time DESC,id DESC,outgoing DESC LIMIT ?", arrayOf(resolve(jid),limit.coerceIn(1,5000).toString())
+    ).use { c -> buildList { while (c.moveToNext()) add(Message(c.getString(0),c.getString(1),c.getString(2),c.getInt(3)!=0,c.getInt(4),c.getLong(5),c.getString(6),c.getString(7),c.getString(8))) }.reversed() }
     fun hasEarlier(jid: String, first: Message): Boolean = readableDatabase.rawQuery(
         "SELECT 1 FROM messages WHERE peer=? AND (time<? OR (time=? AND (id<? OR (id=? AND outgoing<?)))) LIMIT 1",
         arrayOf(resolve(jid),first.time.toString(),first.time.toString(),first.id,first.id,if(first.outgoing)"1" else "0")
     ).use { it.moveToFirst() }
-    fun append(id: String, address: String, text: String, outgoing: Boolean, status: Int, time: Long = System.currentTimeMillis(), historical: Boolean = false, author: String = "") {
+    fun append(id: String, address: String, text: String, outgoing: Boolean, status: Int, time: Long = System.currentTimeMillis(), historical: Boolean = false, author: String = "", quote: String = "") {
         val jid = resolve(address)
         val db = writableDatabase
         db.beginTransaction()
@@ -160,12 +165,13 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
             if (!exists) {
                 db.insertOrThrow("messages", null, ContentValues().apply {
                     put("id", id); put("peer", jid); put("text", effectiveText); put("outgoing", if(outgoing) 1 else 0)
-                    put("status", status); put("time", time); put("note", "")
+                    put("status", status); put("time", time); put("note", ""); put("quote", quote)
                 })
                 db.execSQL("UPDATE chats SET updated=MAX(updated,?) WHERE jid=?",arrayOf(time,jid))
             } else if (outgoing && status >= 2) {
                 db.execSQL("UPDATE messages SET status=MAX(status,?),note='' WHERE peer=? AND id=? AND outgoing=1", arrayOf(status,jid,id))
             }
+            if(exists && quote.isNotEmpty())db.execSQL("UPDATE messages SET quote=? WHERE peer=? AND id=? AND outgoing=? AND quote=''", arrayOf(quote,jid,id,if(outgoing)1 else 0))
             if(author.isNotBlank())db.execSQL("INSERT OR REPLACE INTO message_authors(peer,id,outgoing,author) VALUES(?,?,?,?)",arrayOf(jid,id,if(outgoing)1 else 0,author))
             if(exists && historical) db.execSQL("UPDATE messages SET time=MIN(time,?) WHERE peer=? AND id=? AND outgoing=?",arrayOf(time,jid,id,if(outgoing)1 else 0))
             db.setTransactionSuccessful()
@@ -301,9 +307,10 @@ class ChatStore(context: Context) : SQLiteOpenHelper(context, "conversations.db"
             db.execSQL("INSERT OR IGNORE INTO chat_deletions(peer,cutoff,changed,remove_chat) SELECT ?,cutoff,changed,remove_chat FROM chat_deletions WHERE peer=?",arrayOf(pn,lid))
             db.execSQL("UPDATE chat_deletions SET cutoff=MAX(cutoff,COALESCE((SELECT cutoff FROM chat_deletions WHERE peer=?),0)),changed=MAX(changed,COALESCE((SELECT changed FROM chat_deletions WHERE peer=?),0)),remove_chat=MAX(remove_chat,COALESCE((SELECT remove_chat FROM chat_deletions WHERE peer=?),0)) WHERE peer=?",arrayOf(lid,lid,lid,pn))
             // Duplicate IDs keep their first committed content and the strongest confirmation.
-            db.execSQL("INSERT OR IGNORE INTO messages(id,peer,text,outgoing,status,time,note) SELECT id,?,text,outgoing,status,time,note FROM messages WHERE peer=?", arrayOf(pn,lid))
+            db.execSQL("INSERT OR IGNORE INTO messages(id,peer,text,outgoing,status,time,note,quote) SELECT id,?,text,outgoing,status,time,note,quote FROM messages WHERE peer=?", arrayOf(pn,lid))
             db.execSQL("UPDATE messages SET status=MAX(status,COALESCE((SELECT old.status FROM messages old WHERE old.peer=? AND old.id=messages.id AND old.outgoing=1),status)) WHERE peer=? AND outgoing=1", arrayOf(lid,pn))
             db.execSQL("UPDATE messages SET note='' WHERE peer=? AND outgoing=1 AND status>=2", arrayOf(pn))
+            db.execSQL("UPDATE messages SET quote=COALESCE((SELECT old.quote FROM messages old WHERE old.peer=? AND old.id=messages.id AND old.outgoing=messages.outgoing),quote) WHERE peer=? AND quote=''", arrayOf(lid,pn))
             db.execSQL("DELETE FROM messages WHERE peer=?", arrayOf(lid))
             db.execSQL("DELETE FROM chats WHERE jid=?", arrayOf(lid))
             db.execSQL("DELETE FROM message_mutations WHERE peer=?",arrayOf(lid))
