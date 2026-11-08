@@ -616,7 +616,9 @@ class MainActivity : Activity() {
     }
     private fun showChat(jid: String) {
         selectedChats.clear();conversationScroll=null
-        conversation=store.resolve(jid)
+        val canonical = store.resolve(jid)
+        conversation = canonical
+        debugLog.add("ARCHIVE_CHAT_OPEN ref=c${Integer.toHexString(canonical.hashCode())} actual=${store.chat(canonical)?.archived}")
         debugLog.add("CHAT_OPEN selected=${DebugLog.addressHint(jid)} canonical=${DebugLog.addressHint(conversation!!)}")
         historyWindow=100
         renderedMessages=emptyList()
@@ -925,9 +927,11 @@ class MainActivity : Activity() {
                                     "pin" -> { db.setPinned(e[2],if(e[4]=="1")time else 0,time);importedPins++;traceGroupSync("pin",e[2]);debugLog.add("PIN_SYNC_APPLIED ref=${Integer.toHexString(db.resolve(e[2]).hashCode())} received=${e[4]=="1"} actual=${(db.chat(e[2])?.pinned ?: 0)>0} changed=$time") }
                                     "history-archive" -> db.historyArchived(e[2],e[4]=="1")
                                     "archive" -> {
-                                        db.setArchived(e[2],e[4]=="1",time)
+                                        val peer = db.resolve(e[2])
+                                        val received = e[4] == "1"
+                                        db.setArchived(peer, received, time)
                                         importedArchives++
-                                        debugLog.add("SYNC_CHAT_ARCHIVE archived=${e[4]=="1"}")
+                                        debugLog.add("SYNC_CHAT_ARCHIVE ref=c${Integer.toHexString(peer.hashCode())} archived=$received actual=${db.chat(peer)?.archived}")
                                     }
                                     "delete-chat", "clear-chat" -> {
                                         db.applyChatDeletion(e[2],e[3].toLong(),time,e[0]=="delete-chat")
