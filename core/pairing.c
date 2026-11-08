@@ -372,6 +372,7 @@ int wa_pair_stored(wa_pair_session *s,const char *id,const char *jid,int outgoin
 int wa_pair_resolve(wa_pair_session *s,const char *jid,char out[128]) {
   return s&&wa_messenger_resolve(s->messenger,jid,out);
 }
+int wa_pair_inspect_archive(wa_pair_session *s){return s&&wa_messenger_inspect_archive(s->messenger);}
 int wa_pair_history(wa_pair_session *s,const char *jid,const char *anchor,int own,uint64_t time,const char *id) {return s&&wa_messenger_history(s->messenger,jid,anchor,own,time,id);}
 int wa_pair_history_task(wa_pair_session *s,unsigned slot,uint8_t *out,size_t cap,size_t *n) {
  if(!s||!s->messenger)return -1;

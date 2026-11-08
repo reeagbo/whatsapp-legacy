@@ -308,6 +308,20 @@ int main(void) {
    if(!strcmp(e.kind,"archive")){archives++;assert(e.state==0);}
   }
   assert(pins==1&&archives==1&&wa_state_version(&io,1)==4);wa_history_free(h);
+  /* Inspect the same authenticated map without committing its receive cursor. */
+  uint8_t inspect_task[sizeof rebuild_task];memcpy(inspect_task,rebuild_task,rebuild_n);
+  wa_slice inspect_token;
+  assert(bytes((wa_slice){inspect_task,rebuild_n},109,&inspect_token));
+  assert(inspect_token.len==strlen(WA_STATE_INSPECT_REQUEST));
+  memcpy(inspect_task+(inspect_token.ptr-inspect_task),WA_STATE_INSPECT_REQUEST,inspect_token.len);
+  big64(stored_version,3);assert(io.put(io.user,version_key(1),stored_version,8));
+  h=wa_history_open_sync(&io,inspect_task,rebuild_n,NULL,0,NULL);
+  assert(h&&wa_history_version(h)==4&&h->action_count==2);wa_history_free(h);
+  char inspect_slot[32];key(WA_HISTORY_TASKS-1,inspect_slot);
+  assert(io.put(io.user,inspect_slot,inspect_task,rebuild_n));
+  assert(wa_history_commit(&io,WA_HISTORY_TASKS-1,inspect_task,rebuild_n,4));
+  assert(wa_state_version(&io,1)==3&&wa_state_rebuild_needed(&io));
+  big64(stored_version,4);assert(io.put(io.user,version_key(1),stored_version,8));
   rebuild_task[rebuild_n-1]^=1;
   assert(!wa_history_open_sync(&io,rebuild_task,rebuild_n,NULL,0,NULL));rebuild_task[rebuild_n-1]^=1;
   big64(stored_version,5);assert(io.put(io.user,version_key(1),stored_version,8));

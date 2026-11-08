@@ -20,7 +20,7 @@ struct wa_messenger {
  char group_query[96],group_target[128],group_key[33];
  wa_tree *group_listing;const wa_node *group_next;int group_action;uint64_t group_deadline;unsigned group_sequence;int groups_due;
 
- uint64_t sync_due[2],last_key_request,sync_requested_version,sync_deadline;int sync_more,sync_low,sync_force[2],rebuild,rebuild_waiting;uint64_t rebuild_version,rebuild_deadline;unsigned sync_sequence;char sync_query[48];
+ uint64_t sync_due[2],last_key_request,sync_requested_version,sync_deadline;int sync_more,sync_low,sync_force[2],rebuild,rebuild_waiting,inspect_archive;uint64_t rebuild_version,rebuild_deadline;unsigned sync_sequence;char sync_query[48];
  int ready,boot,pending,phase;uint64_t now,deadline;
  char delete_peer[128],delete_anchor[96],delete_id[48],delete_snapshot[48];
  uint64_t delete_time,delete_changed,delete_deadline;int delete_own,chat_change;
@@ -444,16 +444,17 @@ int wa_messenger_delete_chat(wa_messenger *m,const char *peer,const char *anchor
  m->delete_id[0]=0;m->delete_snapshot[0]=0;m->delete_deadline=0;return 0;
 }
 int wa_messenger_write_pending(const wa_messenger *m,const char *request){
- return m&&request&&((m->rebuild&&!strcmp(request,WA_STATE_REBUILD_REQUEST))||(m->delete_id[0]&&m->delete_snapshot[0]&&!strcmp(m->delete_snapshot,request)));
+ return m&&request&&((m->rebuild&&!strcmp(request,m->inspect_archive?WA_STATE_INSPECT_REQUEST:WA_STATE_REBUILD_REQUEST))||(m->delete_id[0]&&m->delete_snapshot[0]&&!strcmp(m->delete_snapshot,request)));
 }
 void wa_messenger_delete_snapshot(wa_messenger *m,const struct wa_history *h){
  if(!m)return;
- if(!strcmp(wa_history_delete_request(h),WA_STATE_REBUILD_REQUEST)){
+ if(!strcmp(wa_history_delete_request(h),m->inspect_archive?WA_STATE_INSPECT_REQUEST:WA_STATE_REBUILD_REQUEST)){
+  if(!m->rebuild)return;
   if(wa_history_write_more(h)){
    if(!wa_history_save_write_base(h,&m->io))return;
    m->rebuild_version=wa_history_version(h);
   }else{
-   m->rebuild=0;m->rebuild_version=0;
+   m->rebuild=0;m->rebuild_version=0;m->inspect_archive=0;
    event(m,"state-sync","","","regular_low-rebuilt",1);
   }
   m->rebuild_waiting=0;m->sync_due[1]=0;return;
@@ -507,10 +508,10 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
    m->sync_query[0]=0;
    if(type&&!strcmp(type,"result")){
     int rebuilding=m->sync_low&&m->rebuild;
-    int collected=wa_state_collect(&m->io,node,rebuilding?WA_STATE_REBUILD_REQUEST:NULL,m->sync_low);
+    int collected=wa_state_collect(&m->io,node,rebuilding?(m->inspect_archive?WA_STATE_INSPECT_REQUEST:WA_STATE_REBUILD_REQUEST):NULL,m->sync_low);
     m->sync_more=!rebuilding&&collected>1;
     if(rebuilding&&collected){m->rebuild_waiting=1;m->rebuild_deadline=m->now+120000;}
-    if(!collected)m->sync_force[m->sync_low]=1;
+    if(!collected){m->sync_force[m->sync_low]=1;if(m->inspect_archive&&rebuilding){m->inspect_archive=0;m->rebuild=0;}}
     event(m,"state-sync","","",m->sync_low?"regular_low":"regular_high",collected?0:-1);
    }else event(m,"state-sync","","",m->sync_low?"regular_low":"regular_high",-2);
    return 1;
@@ -537,6 +538,11 @@ int wa_messenger_node(wa_messenger *m,const wa_node *node){
  if(!strcmp(node->tag,"message"))return incoming(m,node);
  return 1;
  boot_error:m->boot=0;event(m,"notice","","","No se pudieron preparar las claves de mensajería. Vuelve a conectar.",-1);return 0;
+}
+int wa_messenger_inspect_archive(wa_messenger *m){
+ if(!m||!m->ready||m->rebuild||m->delete_id[0]||m->sync_query[0])return 0;
+ m->inspect_archive=1;m->rebuild=1;m->rebuild_version=0;m->sync_due[1]=0;
+ return 1;
 }
 void wa_messenger_recover_state(wa_messenger *m,int low){
  if(m){m->sync_force[low!=0]=1;if(low&&m->rebuild){m->rebuild_waiting=0;m->rebuild_version=0;m->sync_due[1]=0;}}

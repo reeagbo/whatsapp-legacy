@@ -84,7 +84,11 @@ int wa_state_rebuild_needed(const wa_storage *io) {
  uint8_t marker=0;size_t n=0;
  return !io||io->get(io->user,"state-low-projection-v1",&marker,1,&n)!=1||n!=1||marker!=1;
 }
-static int rebuild_request(const char *request){return request&&!strcmp(request,WA_STATE_REBUILD_REQUEST);}
+static int inspect_request(const char *request){return request&&!strcmp(request,WA_STATE_INSPECT_REQUEST);}
+static int rebuild_request(const char *request){return request&&(!strcmp(request,WA_STATE_REBUILD_REQUEST)||inspect_request(request));}
+static const char *write_base_key(const char *request,int low){
+ return inspect_request(request)?"inspect-base-low":rebuild_request(request)?"rebuild-base-low":low?"write-base-low":"write-base-high";
+}
 static int key_file(wa_slice id,char out[80]) {
  uint8_t digest[32];
  if(!id.len||id.len>64||!SHA256(id.ptr,id.len,digest))return 0;
@@ -165,7 +169,7 @@ static int write_state_task(const wa_storage *io,const wa_node *snapshot,const w
  if(ok&&snapshot)ok=blob_ref((wa_slice){snapshot->data,snapshot->data_len},task,WA_HISTORY_NOTIFICATION_MAX,&n);
  else if(ok){
   uint8_t *base=malloc(WA_HISTORY_NOTIFICATION_MAX);size_t size=0;
-  ok=base&&io->get(io->user,rebuild_request(request)?"rebuild-base-low":low?"write-base-low":"write-base-high",base,WA_HISTORY_NOTIFICATION_MAX,&size)==1
+  ok=base&&io->get(io->user,write_base_key(request,low),base,WA_HISTORY_NOTIFICATION_MAX,&size)==1
    &&put_bytes(113,base,size,task,WA_HISTORY_NOTIFICATION_MAX,&n);
   if(base){OPENSSL_cleanse(base,WA_HISTORY_NOTIFICATION_MAX);free(base);}
  }
@@ -578,7 +582,7 @@ static int replay_write_snapshot(wa_history *h,const wa_storage *io,wa_slice tas
 int wa_history_write_more(const wa_history *h){return h&&h->write_more;}
 int wa_history_save_write_base(const wa_history *h,const wa_storage *io){
  return h&&h->delete_request[0]&&h->size<=WA_HISTORY_NOTIFICATION_MAX
-  &&io->put(io->user,rebuild_request(h->delete_request)?"rebuild-base-low":h->low?"write-base-low":"write-base-high",h->plain,h->size);
+  &&io->put(io->user,write_base_key(h->delete_request,h->low),h->plain,h->size);
 }
 static int replace_snapshot_value(wa_slice snapshot,const uint8_t index_mac[32],uint8_t hash[128]){
  reader r={snapshot.ptr,snapshot.len,0};unsigned f,w;uint64_t v;wa_slice record,index,value;int k;

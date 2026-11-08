@@ -200,6 +200,15 @@ JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeDe
 JNIEXPORT void JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeDeleteSnapshot(JNIEnv *env,jobject self,jlong h,jlong cursor){
  (void)env;(void)self;if(h&&cursor)wa_pair_delete_snapshot(session(h),(wa_history*)(intptr_t)cursor);
 }
+JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeInspectArchive(JNIEnv *env,jobject self,jlong h){
+ (void)env;(void)self;return h&&wa_pair_inspect_archive(session(h))?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeIsArchiveInspection(JNIEnv *env,jobject self,jlong h){
+ (void)env;(void)self;return h&&!strcmp(wa_history_delete_request((wa_history*)(intptr_t)h),WA_STATE_INSPECT_REQUEST)?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistoryHasMore(JNIEnv *env,jobject self,jlong h){
+ (void)env;(void)self;return h&&wa_history_write_more((wa_history*)(intptr_t)h)?JNI_TRUE:JNI_FALSE;
+}
 JNIEXPORT jint JNICALL Java_org_reeagbo_whatsapplegacy_MainActivity_nativeHistorySlots(JNIEnv *env,jobject self){
  (void)env;(void)self;return WA_HISTORY_TASKS;
 }

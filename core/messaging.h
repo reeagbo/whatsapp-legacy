@@ -16,6 +16,7 @@ int wa_messenger_send(wa_messenger *,const char *jid,const char *id,const uint8_
 /* Resolve a stored LID to its known phone address; unknown LIDs stay LIDs. */
 int wa_messenger_resolve(wa_messenger *,const char *jid,char out[128]);
 int wa_messenger_history(wa_messenger *,const char *jid,const char *oldest_id,int from_me,uint64_t oldest_ms,const char *request_id);
+int wa_messenger_inspect_archive(wa_messenger *);
 int wa_messenger_sync_key(wa_messenger *,const char *,const char *);
 struct wa_history;
 int wa_messenger_delete_chat(wa_messenger *,const char *,const char *,int,uint64_t,uint64_t,int);

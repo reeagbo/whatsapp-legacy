@@ -52,6 +52,10 @@ import java.util.concurrent.TimeUnit
 class MainActivity : Activity() {
     private external fun nativeGroup(handle: Long, action: Int, jid: String, subject: ByteArray, members: String): Boolean
     private external fun nativeHistoryRequest(handle: Long, jid: String, anchor: String, own: Boolean, time: Long, id: String): Boolean
+    private external fun nativeInspectArchive(handle: Long): Boolean
+    private external fun nativeIsArchiveInspection(cursor: Long): Boolean
+    private external fun nativeHistoryHasMore(cursor: Long): Boolean
+    private var archiveInspectionPeer: String? = null
     private external fun nativeHistorySlots(): Int
     private external fun nativeHistoryTask(handle: Long, slot: Int): ByteArray?
     private external fun nativeDeleteChat(handle: Long, peer: String, anchor: String, own: Boolean, time: Long, changed: Long, change: Int): Boolean
@@ -864,6 +868,7 @@ class MainActivity : Activity() {
         val tasks=active.historyTasks()
         if(tasks.isEmpty())return
         historyBusy=true;lastHistoryAttempt=now
+        val inspectedPeer = archiveInspectionPeer
         val requestedPeer=historyRequestPeer
         val requestedId=historyRequestId
         historyWorker.execute {
@@ -901,6 +906,22 @@ class MainActivity : Activity() {
                             active.requestSyncKey(it)
                         }
                         if(handle==0L)throw java.io.IOException("History integrity or format check failed")
+                        if (nativeIsArchiveInspection(handle)) {
+                            stage = "archive-inspection"
+                            val version = nativeHistoryVersion(handle)
+                            if (!nativeHistoryHasMore(handle) && inspectedPeer != null) {
+                                val peer = db.resolve(inspectedPeer)
+                                var archived: Boolean? = null
+                                while (true) {
+                                    val e = nativeHistoryNext(handle) ?: break
+                                    if (e[0] == "archive" && db.resolve(e[2]) == peer) archived = e[4] == "1"
+                                }
+                                debugLog.add("ARCHIVE_SNAPSHOT ref=c${Integer.toHexString(peer.hashCode())} version=$version server=${archived ?: "absent"} local=${db.chat(peer)?.archived}")
+                            }
+                            if (!active.historyDone(slot, task, version)) throw java.io.IOException("Inspection task acknowledgement unavailable")
+                            active.deleteFromSnapshot(handle)
+                            continue
+                        }
                         var importedMessages=0;var importedChats=0;var importedPins=0;var importedArchives=0;var containsRequestedPeer=false
                         stage="sqlite"
                         db.historyTransaction {
@@ -1028,7 +1049,19 @@ class MainActivity : Activity() {
     private fun showDiagnostics() {
         val tools=column()
         val save=Button(this).apply { text="Guardar log";setOnClickListener { exportLog() } }
-        listOf(check,stop,save).forEach {
+        val inspect = conversation?.let { jid ->
+            Button(this).apply {
+                text = "Comprobar archivo en servidor"
+                setOnClickListener {
+                    val previous = archiveInspectionPeer
+                    archiveInspectionPeer = jid
+                    val started = connection?.inspectArchive() == true
+                    if (!started) archiveInspectionPeer = previous
+                    Toast.makeText(this@MainActivity, if (started) "Consultando estado completo" else "Espera a que termine la sincronización y vuelve a intentarlo", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        listOfNotNull(check,stop,inspect,save).forEach {
             (it.parent as? ViewGroup)?.removeView(it)
             tools.addView(it)
         }
@@ -1181,6 +1214,12 @@ class MainActivity : Activity() {
             val sent=nativeDeleteChat(handle,request.peer,request.id,request.outgoing,request.time,request.changed,request.change)
             if(sent)ws?.let { flush(it) }
             sent
+        }
+        fun inspectArchive(): Boolean = synchronized(lock) {
+            if (finished || handle == 0L || !nativeInspectArchive(handle)) return@synchronized false
+            nativeTick(handle, SystemClock.elapsedRealtime())
+            ws?.let { flush(it) }
+            true
         }
         fun deleteFromSnapshot(cursor: Long) = synchronized(lock) {
             if(!finished && handle!=0L) {
