@@ -86,7 +86,20 @@ class GroupCreationInstrumentation : Instrumentation() {
                     db.execSQL("INSERT INTO group_metadata(jid,visible) VALUES(?,0)",arrayOf(restored))
                     db.execSQL("INSERT INTO chats(jid,name,updated,pinned) VALUES(?,?,?,?)",arrayOf(deleted,"Borrado",100,200))
                     db.execSQL("INSERT INTO chat_deletions VALUES(?,?,?,1)",arrayOf(deleted,500,500))
-                    db.version=8
+                    // Recreate the old message layout before exercising v8 -> v10.
+                    db.beginTransaction()
+                    try {
+                        db.execSQL("ALTER TABLE messages RENAME TO messages_v10_fixture")
+                        db.execSQL("DROP INDEX messages_peer_time")
+                        db.execSQL("CREATE TABLE messages(id TEXT NOT NULL, peer TEXT NOT NULL REFERENCES chats(jid), text TEXT NOT NULL, outgoing INTEGER NOT NULL, status INTEGER NOT NULL, time INTEGER NOT NULL, note TEXT NOT NULL, PRIMARY KEY(peer,id,outgoing))")
+                        db.execSQL("CREATE INDEX messages_peer_time ON messages(peer,time)")
+                        db.execSQL("INSERT INTO messages SELECT id,peer,text,outgoing,status,time,note FROM messages_v10_fixture")
+                        db.execSQL("DROP TABLE messages_v10_fixture")
+                        db.version=8
+                        db.setTransactionSuccessful()
+                    } finally {
+                        db.endTransaction()
+                    }
                     store.close()
                     check(store.chats(false).first().jid==restored)
                     check(store.messages(restored).isEmpty())
